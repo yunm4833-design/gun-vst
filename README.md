@@ -76,3 +76,81 @@
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --parallel
 ```
+# BREACH // 貫通 — Harmonic Chord Resonator
+
+**BREACH // 貫通** is a stereo Harmonic Chord Resonator audio effect plugin built with **JUCE (C++17)**, supporting **VST3 / AU / Standalone** formats. It features a high-contrast, minimalist monochrome Japanese manga aesthetic with real-time audio-reactive impact visuals.
+
+## Core Architecture & Signal Flow
+
+```
+Stereo Input ──► [Transient & RMS Meter] ──► (Dry Path) ─────────────────────────────┐
+     │                                                                               ▼
+     ├─► [Envelope Follower] ──┐                                         [Equal-Power Dry/Wet] ──► Stereo Out
+     │                         ▼                                                     ▲
+[MIDI / Chord Engine] ──► [Modulation Matrix (2 LFO + Env)]                          │
+     │                         │                                                     │
+     ▼                         ▼                                                     │
+[BPM Step Arp] ──► [8-Voice Parallel Resonator Bank (20ms Crossfade)] ──► [Allpass Smear] ──► [Hilbert Shift] ──► [Wet Filter & Limiter]
+```
+
+The incoming audio simultaneously excites up to **8 parallel tuned stereo resonators**, each pitched to a note within the selected scale, chord voicing, or live MIDI input. Even unpitched material—such as drums, percussion, white noise, or foley—is instantly infused with rich harmonic resonance and spatial depth.
+
+## Five Firearm Resonator Modes
+
+Switch seamlessly between 5 distinct physical/spectral resonator topologies via the bottom firearm dock (engineered with a **20ms equal-power crossfade** to prevent clicks or pops):
+
+| Mode | Weapon Icon | Resonator Topology | Sonic Character |
+| --- | --- | --- | --- |
+| **Mode A** | **PISTOL** | Clean Bandpass | Zero-delay feedback TPT State-Variable high-Q bandpass filters; crisp, glassy, and articulate |
+| **Mode B** | **SHOTGUN** | Comb String | 3rd-order Lagrange fractional-delay Karplus-Strong waveguides; plucked string and metallic textures |
+| **Mode C** | **SMG** | Dual Formant | Dual-peak vocal tract formant filters; imparts lush choir-like vowel resonances |
+| **Mode D** | **SNIPER** | Distorted Res | High-Q resonators driven into asymmetric `tanh` soft-clipping; aggressive harmonic saturation |
+| **Mode E** | **REVOLVER** | Long-Tail Pad | Extended feedback decay routed through multi-stage prime allpass diffusers; vast ambient chord tails |
+
+## Nine Core Modules & Parameters
+
+1. **Chord Panel (Pitch & Voicing)**
+   - **12 Root Notes**, multiple scales (Major, Natural Minor, Harmonic Minor, Dorian, Mixolydian, Pentatonic, etc.), and chord types (`Maj`, `Min`, `Maj7`, `Min7`, `Dom7`, `Sus2`, `Sus4`, `Add9`, `Dim7`).
+   - **4 to 8 active voices** distributed across **1 to 3 octaves**.
+   - **MIDI Pitch Override**: Play notes directly on a MIDI keyboard to dynamically dictate resonator pitches in real time.
+2. **Resonator Bank**
+   - `DECAY`: Controls resonance tail length and feedback depth (with built-in stability limiting and gain compensation).
+   - `DAMPING`: Controls high-frequency energy absorption over time.
+   - `TONE`: Shapes harmonic brightness and dual-formant vowel ratios.
+3. **Spacing**
+   - Adjusts cross-octave distribution (`Octave Spread`), symmetrical micro-detuning (`Detune`), and equal-power stereo panorama (`Stereo Width`).
+4. **Drift**
+   - Introduces slow, independent quasi-random pitch drift per voice alongside stereo allpass diffusion to smear transient edges.
+5. **Shift (Frequency Shifter)**
+   - Broadband IIR **Hilbert Transform** single-sideband frequency shifter (`-500 Hz` to `+500 Hz`), shifting spectral partials linearly to create metallic and inharmonic timbres.
+6. **Arp (BPM-Synced Step Sequencer)**
+   - Syncs to host DAW tempo (`1/1` to `1/32`) with selectable patterns (`Up`, `Down`, `Up-Down`, `Random`, `Chord Pulse`) and `Gate` length to rhythmically excite individual voices.
+7. **Motion (Modulation Matrix)**
+   - **2 Multi-Waveform LFOs** (Sine, Triangle, Saw, Square, Sample & Hold) + **1 Envelope Follower**, routable to `Decay`, `Drift`, `Shift`, and Filter Cutoff.
+8. **Filter**
+   - Dedicated wet-signal High-Pass (`HPF`) and Low-Pass (`LPF`) filters to sculpt the resonant bandwidth.
+9. **Depth (Dry/Wet Mix)**
+   - `0% – 100%` equal-power dry/wet blend for consistent loudness across the entire sweep.
+
+## Manga Visuals & Engineering Highlights
+
+- **60Hz Lock-Free Visual Telemetry**: The DSP engine streams input RMS, transient triggers, and individual per-voice energies to the UI via atomic snapshots—driving bullet vibration, speed lines, radial wall cracks, and 1-frame impact inversions.
+- **Polarity Inversion (`INVERT`)**: Toggle instantly between classic black-on-white manga ink and inverted white-on-black night mode.
+- **Real-Time Safe C++17**: Full `AudioProcessorValueTreeState` (APVTS) parameter automation, parameter smoothing (`SmoothedValue`), zero heap allocations on the audio thread, `ScopedNoDenormals` protection, and output safety soft-limiting.
+
+## Installation & Build Instructions
+
+### Option 1: Install Pre-Built GitHub Actions Binaries
+
+1. Navigate to the **`Actions`** tab in this repository and open the latest successful **`Build BREACH Resonator VST3 & AU`** workflow run.
+2. Download the archive for your OS under **`Artifacts`**:
+   - **Windows**: Extract and copy `BREACH Resonator.vst3` into `C:\Program Files\Common Files\VST3\`
+   - **macOS**: Extract and copy `BREACH Resonator.vst3` into `~/Library/Audio/Plug-Ins/VST3/` (and `.component` into `~/Library/Audio/Plug-Ins/Components/`)
+3. Rescan plugins in your DAW (Ableton Live, Cubase, FL Studio, Logic Pro, Reaper, etc.) and load **BREACH Resonator**.
+
+### Option 2: Local CMake Build (CMake 3.22+ & Xcode / Visual Studio 2022)
+
+```
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --parallel
+```
