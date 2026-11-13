@@ -3,7 +3,8 @@
 # BREACH // 貫通 — 多复音和弦共振器插件 (v1.1.1)
 
 **BREACH // 貫通** 是一款基于 **JUCE 8.0.4 (C++17)** 开发的立体声多复音和弦共振器（Polyphonic Chord Resonator）音频效果插件，支持 **VST3**、**AU** 与 **Standalone** 格式。插件采用高对比度黑白日漫分镜视觉风格，可将鼓组瞬态、合成器、吉他及各类音频信号实时转化为带有和声色彩的共振弦音、金属波导与动态铺底质感。
-
+说明书：
+https://drive.google.com/file/d/1wn8hUrbyw5LvqqEyvzh2DUZ687c5WVTc/view?usp=sharing
 ---
 
 ## 核心特性（Stage 2 / v1.1.1）
