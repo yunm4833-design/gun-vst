@@ -49,7 +49,12 @@
 3. 滑到页面底部的 **Artifacts** 区域下载对应系统的安装包：
    - `BreachResonator-macOS-VST3-AU`（包含 Apple Silicon + Intel 通用版 `.vst3` 与 `.component`）
    - `BreachResonator-Windows-VST3`（包含 Windows 64 位 `.vst3`）
-
+- **macOS**:
+  - **VST3**: `/Library/Audio/Plug-Ins/VST3/BREACH Resonator.vst3`
+  - **AU (Logic Pro)**: `/Library/Audio/Plug-Ins/Components/BREACH Resonator.component`
+  - *Note for unsigned builds on macOS*: Run `sudo xattr -rd com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/BREACH Resonator.vst3"` (and the `.component` path) in Terminal if macOS Gatekeeper blocks loading.
+- **Windows**:
+  - **VST3**: `C:\Program Files\Common Files\VST3\BREACH Resonator.vst3`
 ### 方式二：本地源码编译
 本地需安装 **CMake 3.22+** 及 C++17 编译器（macOS 需安装 Xcode，Windows 需安装 Visual Studio 2022），CMake 会自动拉取 JUCE `8.0.4` 框架源码进行编译：
 
