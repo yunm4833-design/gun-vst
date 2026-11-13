@@ -50,7 +50,12 @@ Stereo Input ─► Input Gain ─► [Transient Detector & Envelope Follower]
 3. Download the artifact for your OS under **Artifacts**:
    - `BreachResonator-macOS-VST3-AU` (Universal `arm64` + `x86_64` `.vst3` & `.component`)
    - `BreachResonator-Windows-VST3` (Windows x64 `.vst3`)
-
+  - **macOS**:
+  - **VST3**: `/Library/Audio/Plug-Ins/VST3/BREACH Resonator.vst3`
+  - **AU (Logic Pro)**: `/Library/Audio/Plug-Ins/Components/BREACH Resonator.component`
+  - *Note for unsigned builds on macOS*: Run `sudo xattr -rd com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/BREACH Resonator.vst3"` (and the `.component` path) in Terminal if macOS Gatekeeper blocks loading.
+- **Windows**:
+  - **VST3**: `C:\Program Files\Common Files\VST3\BREACH Resonator.vst3`
 ### Build Locally from Source
 Requires **CMake 3.22+** and a C++17 compiler (Xcode on macOS or Visual Studio 2022 on Windows). JUCE `8.0.4` is fetched automatically via CMake `FetchContent`.
 
