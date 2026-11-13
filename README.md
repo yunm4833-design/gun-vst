@@ -1,5 +1,5 @@
 **English** | [简体中文](./README_CN.md)
-Just use v1.0.0 for now. 1.1.1 still have Bug need to fix:)
+
 
 # BREACH // 貫通 — Polyphonic Chord Resonator (v1.1.1)
 
