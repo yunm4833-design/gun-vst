@@ -49,6 +49,8 @@ public:
         setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
         setColour(juce::Label::outlineColourId, juce::Colours::transparentBlack);
 
+        // Ensure unselected buttons have dark ink text on paper background,
+        // and selected buttons have paper text on dark ink background.
         setColour(juce::TextButton::buttonColourId, paper);
         setColour(juce::TextButton::buttonOnColourId, ink);
         setColour(juce::TextButton::textColourOffId, ink);
@@ -67,7 +69,7 @@ public:
 
         setColour(juce::Slider::textBoxTextColourId, ink);
         setColour(juce::Slider::textBoxBackgroundColourId, paper);
-        setColour(juce::Slider::textBoxOutlineColourId, ink.withAlpha(0.55f));
+        setColour(juce::Slider::textBoxOutlineColourId, ink.withAlpha(0.45f));
         setColour(juce::Slider::textBoxHighlightColourId, ink.withAlpha(0.2f));
         setColour(juce::Slider::rotarySliderFillColourId, ink);
         setColour(juce::Slider::rotarySliderOutlineColourId, ink);
@@ -113,11 +115,13 @@ public:
         const int w = button.getWidth();
         const int h = button.getHeight();
 
+        // Fit font cleanly even on compact semitone buttons like C#, D#, F#, G#, A#
         float fontSize = juce::jlimit(9.5f, 13.0f, static_cast<float>(h) * 0.48f);
         if (w <= 34 && text.length() >= 2)
             fontSize = juce::jmin(fontSize, 10.5f);
 
         g.setFont(getMangaFont(fontSize, true));
+        // Minimal 1px horizontal inset so labels never truncate to "..."
         g.drawFittedText(text, 1, 0, juce::jmax(1, w - 2), h, juce::Justification::centred, 1, 0.72f);
     }
 
@@ -138,6 +142,7 @@ public:
         g.setColour(getInkColour());
         g.drawRect(bounds, 1.5f);
 
+        // Compact chevron arrow on the right
         const float arrowZoneW = 16.0f;
         const float cx = static_cast<float>(width) - arrowZoneW * 0.55f;
         const float cy = static_cast<float>(height) * 0.5f;
@@ -151,6 +156,7 @@ public:
 
     void positionComboBoxText(juce::ComboBox& box, juce::Label& label) override
     {
+        // Tight margins so text like "1 OCT", "12 VOX", "AUTO (GUN MODE)" never clips to "..."
         label.setBounds(4, 1, juce::jmax(1, box.getWidth() - 18), juce::jmax(1, box.getHeight() - 2));
         const float fontSize = juce::jlimit(9.5f, 12.0f, static_cast<float>(box.getHeight()) * 0.46f);
         label.setFont(getMangaFont(fontSize, true));
@@ -179,9 +185,11 @@ public:
         const auto ink = getInkColour();
         const auto paper = getPaperColour();
 
+        // Outer dial fill
         g.setColour(paper);
         g.fillEllipse(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f);
 
+        // 13 manga dial ticks around perimeter
         g.setColour(ink);
         constexpr int numTicks = 13;
         for (int i = 0; i < numTicks; ++i)
@@ -196,14 +204,17 @@ public:
                        cx + sinA * rOuter, cy + cosA * rOuter, 1.3f);
         }
 
+        // Double manga ink rings
         g.drawEllipse(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f, 1.8f);
         const float innerR = radius * 0.80f;
         g.drawEllipse(cx - innerR, cy - innerR, innerR * 2.0f, innerR * 2.0f, 0.9f);
 
+        // Pointer needle
         const float sinP = std::sin(angle);
         const float cosP = -std::cos(angle);
         g.drawLine(cx, cy, cx + sinP * (radius * 0.84f), cy + cosP * (radius * 0.84f), 2.1f);
 
+        // Center hub dot
         g.fillEllipse(cx - 2.4f, cy - 2.4f, 4.8f, 4.8f);
     }
 
@@ -227,11 +238,13 @@ public:
         const float trackW = juce::jmax(4.0f, right - left);
         const float trackH = 5.0f;
 
+        // Track outline
         g.setColour(paper);
         g.fillRect(left, cy - trackH * 0.5f, trackW, trackH);
         g.setColour(ink);
         g.drawRect(left, cy - trackH * 0.5f, trackW, trackH, 1.2f);
 
+        // Fill from center if bipolar, else from left
         const bool isBipolar = (slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0);
         const float clampedPos = juce::jlimit(left, right, sliderPos);
         if (isBipolar)
@@ -247,49 +260,13 @@ public:
             g.fillRect(left, cy - trackH * 0.5f, clampedPos - left, trackH);
         }
 
+        // Rectangular manga fader cap
         const float thumbW = 6.0f;
         const float thumbH = 13.0f;
         g.setColour(paper);
         g.fillRect(clampedPos - thumbW * 0.5f, cy - thumbH * 0.5f, thumbW, thumbH);
         g.setColour(ink);
         g.drawRect(clampedPos - thumbW * 0.5f, cy - thumbH * 0.5f, thumbW, thumbH, 1.5f);
-    }
-
-    void drawLabel(juce::Graphics& g, juce::Label& label) override
-    {
-        const bool isSliderBox = (dynamic_cast<juce::Slider*>(label.getParentComponent()) != nullptr);
-        const auto ink   = getInkColour();
-        const auto paper = getPaperColour();
-
-        if (isSliderBox)
-        {
-            const auto bounds = label.getLocalBounds().toFloat().reduced(0.5f);
-            g.setColour(paper);
-            g.fillRect(bounds);
-            g.setColour(ink.withAlpha(0.55f));
-            g.drawRect(bounds, 1.0f);
-        }
-        else
-        {
-            g.fillAll(label.findColour(juce::Label::backgroundColourId));
-        }
-
-        if (!label.isBeingEdited())
-        {
-            const float alpha = label.isEnabled() ? 1.0f : 0.5f;
-            g.setColour(ink.withAlpha(alpha));
-            g.setFont(isSliderBox ? getMangaFont(10.0f, true) : label.getFont());
-
-            const auto textArea = isSliderBox
-                ? label.getLocalBounds().reduced(2, 1)
-                : label.getBorderSize().subtractedFrom(label.getLocalBounds());
-
-            g.drawFittedText(label.getText(),
-                             textArea,
-                             isSliderBox ? juce::Justification::centred : label.getJustificationType(),
-                             juce::jmax(1, static_cast<int>(static_cast<float>(textArea.getHeight()) / g.getCurrentFont().getHeight())),
-                             0.75f);
-        }
     }
 
     juce::Label* createSliderTextBox(juce::Slider& slider) override
@@ -299,7 +276,7 @@ public:
         l->setJustificationType(juce::Justification::centred);
         l->setColour(juce::Label::textColourId, getInkColour());
         l->setColour(juce::Label::backgroundColourId, getPaperColour());
-        l->setColour(juce::Label::outlineColourId, getInkColour().withAlpha(0.55f));
+        l->setColour(juce::Label::outlineColourId, getInkColour().withAlpha(0.45f));
         return l;
     }
 

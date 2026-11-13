@@ -759,7 +759,7 @@ void BreachResonatorAudioProcessorEditor::paint(juce::Graphics& g)
 
     g.setFont(mangaLaf.getMangaFont(9.5f, true));
     g.setColour(mangaLaf.getMutedInkColour());
-    g.drawText("v1.1.2", 575, 14, 48, 22, juce::Justification::centredRight, false);
+    g.drawText("v1.1.1", 575, 14, 48, 22, juce::Justification::centredRight, false);
 
     // Horizontal divider below main panel / gun strip
     g.setColour(ink);
