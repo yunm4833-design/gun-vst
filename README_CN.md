@@ -45,7 +45,7 @@
 
 ### 方式一：直接下载 GitHub Actions 云端编译成品
 1. 打开本仓库顶部的 [**Actions**](https://github.com/yunm4833-design/gun-vst/actions) 页面。
-2. 点击最新一条已完成（绿色对勾）的 `Build BREACH Resonator VST3 & AU` 工作流记录。
+2. 点击最新一条已完成（绿色对勾）的 `1.1.1` 工作流记录。
 3. 滑到页面底部的 **Artifacts** 区域下载对应系统的安装包：
    - `BreachResonator-macOS-VST3-AU`（包含 Apple Silicon + Intel 通用版 `.vst3` 与 `.component`）
    - `BreachResonator-Windows-VST3`（包含 Windows 64 位 `.vst3`）
