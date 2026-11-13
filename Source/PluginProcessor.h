@@ -1,223 +1,225 @@
 #pragma once
-#include "PluginParameters.h"
-#include "VisualTelemetry.h"
-#include "DspBuildingBlocks.h"
-#include "ChordVoicingEngine.h"
-#include "ResonatorBank.h"
+
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
+#include <array>
+#include <atomic>
+#include <vector>
+#include <cmath>
 
-class BreachResonatorAudioProcessor : public juce::AudioProcessor,
-                                      private juce::AudioProcessorValueTreeState::Listener,
-                                      private juce::AsyncUpdater
+struct VisualTelemetry
+{
+    std::atomic<float> inputRms { 0.0f };
+    std::atomic<float> outputRms { 0.0f };
+    std::atomic<float> transientImpulse { 0.0f };
+    std::atomic<int>   activeArpVoice { 0 };
+    std::atomic<float> lfo1Value { 0.0f };
+    std::atomic<float> lfo2Value { 0.0f };
+    std::atomic<float> envValue { 0.0f };
+    std::array<std::atomic<float>, 12> voiceEnergies {};
+};
+
+class BreachResonatorAudioProcessor : public juce::AudioProcessor
 {
 public:
+    static constexpr int kMaxVoices = 12;
+
     BreachResonatorAudioProcessor();
-    ~BreachResonatorAudioProcessor() override;
-
-    void setMode(int index);
-    int getCurrentMode() const noexcept { return currentModeIndex.load(std::memory_order_relaxed); }
-
-    // Manual UI Trigger button fires a crisp internal impulse burst into the resonator bank
-    void triggerManualImpulse() noexcept { manualTriggerRequested.store(true, std::memory_order_release); }
-
-    // Advanced Panel UI State (persisted inside DAW project state)
-    void setAdvancedPanelOpen(bool open) noexcept { advancedPanelOpen.store(open, std::memory_order_relaxed); }
-    bool isAdvancedPanelOpen() const noexcept { return advancedPanelOpen.load(std::memory_order_relaxed); }
-    void setAdvancedActiveTab(int tabIdx) noexcept { advancedActiveTab.store(juce::jlimit(0, 3, tabIdx), std::memory_order_relaxed); }
-    int getAdvancedActiveTab() const noexcept { return advancedActiveTab.load(std::memory_order_relaxed); }
-
-    const breach::VisualTelemetry& getVisualTelemetry() const noexcept { return telemetry; }
-    juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return apvts; }
+    ~BreachResonatorAudioProcessor() override = default;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
+
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "BREACH Resonator"; }
+    const juce::String getName() const override { return JucePlugin_Name; }
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 3.0; }
+    double getTailLengthSeconds() const override { return 4.0; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
     void setCurrentProgram(int) override {}
-    const juce::String getProgramName(int) override { return "Default"; }
+    const juce::String getProgramName(int) override { return {}; }
     void changeProgramName(int, const juce::String&) override {}
 
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
-private:
-    void parameterChanged(const juce::String& parameterID, float newValue) override;
-    void handleAsyncUpdate() override;
-    static double getDivisionInBeats(int rateIndex) noexcept;
-    void processOversampledBlock(juce::dsp::AudioBlock<float>& block, double effectiveSampleRate, double bpm);
+    void triggerPanicReset();
+    void applyChordPreset(int presetIndex);
 
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     juce::AudioProcessorValueTreeState apvts;
-    breach::VisualTelemetry telemetry;
+    VisualTelemetry telemetry;
 
-    // Stage 1 Atomic Parameter Pointers
-    std::atomic<float>* modeParam = nullptr;
-    std::array<std::atomic<float>*, 12> noteParams{};
-    std::atomic<float>* chordPresetParam = nullptr;
-    std::atomic<float>* rootNoteParam    = nullptr;
-    std::atomic<float>* octaveParam      = nullptr;
-    std::atomic<float>* spreadParam      = nullptr;
-    std::atomic<float>* midiModeParam    = nullptr;
-    std::atomic<float>* attackParam      = nullptr;
-    std::atomic<float>* decayParam       = nullptr;
+private:
+    struct VoiceDSP
+    {
+        // TPT State Variable Filter states (2 cascaded stages for formant / high-Q)
+        float svf1Ic1 = 0.0f, svf1Ic2 = 0.0f;
+        float svf2Ic1 = 0.0f, svf2Ic2 = 0.0f;
 
-    std::atomic<float>* arpOnParam       = nullptr;
-    std::atomic<float>* arpSyncParam     = nullptr;
-    std::atomic<float>* arpRateSyncParam = nullptr;
-    std::atomic<float>* arpRateHzParam   = nullptr;
-    std::atomic<float>* arpPatternParam  = nullptr;
+        // Waveguide fractional-delay comb line
+        std::vector<float> combBuffer;
+        int combWritePos = 0;
+        float combLpState = 0.0f;
+        float allpassState = 0.0f;
 
-    std::atomic<float>* warpParam        = nullptr;
-    std::atomic<float>* driftParam       = nullptr;
-    std::atomic<float>* shiftHzParam     = nullptr;
+        // Per-voice envelope & smoothed frequency
+        float attackEnv = 0.0f;
+        float currentFreq = 220.0f;
+        float energyMetric = 0.0f;
 
-    std::atomic<float>* motionOnParam       = nullptr;
-    std::atomic<float>* motionStrengthParam = nullptr;
-    std::atomic<float>* motionSyncParam     = nullptr;
-    std::atomic<float>* motionRateSyncParam = nullptr;
-    std::atomic<float>* motionRateHzParam   = nullptr;
-    std::atomic<float>* motionShapeParam    = nullptr;
-    std::atomic<float>* unisonParam         = nullptr;
+        void reset()
+        {
+            svf1Ic1 = svf1Ic2 = 0.0f;
+            svf2Ic1 = svf2Ic2 = 0.0f;
+            std::fill(combBuffer.begin(), combBuffer.end(), 0.0f);
+            combWritePos = 0;
+            combLpState = 0.0f;
+            allpassState = 0.0f;
+            attackEnv = 0.0f;
+            energyMetric = 0.0f;
+        }
+    };
 
-    std::atomic<float>* filterTiltParam  = nullptr;
-    std::atomic<float>* filterQParam     = nullptr;
-    std::atomic<float>* filterLowParam   = nullptr;
-    std::atomic<float>* filterHighParam  = nullptr;
-    std::atomic<float>* depthParam       = nullptr;
+    struct SchroederAllpass
+    {
+        std::vector<float> buffer;
+        int idx = 0;
+        float feedback = 0.5f;
 
-    // Stage 2 Atomic Parameter Pointers
-    std::atomic<float>* voiceCapParam = nullptr;
-    std::array<std::atomic<float>*, breach::kMaxVoices> voiceLevelParams{};
-    std::array<std::atomic<float>*, breach::kMaxVoices> voicePanParams{};
-    std::array<std::atomic<float>*, breach::kMaxVoices> voiceDetuneParams{};
-    std::array<std::atomic<float>*, breach::kMaxVoices> voiceDecayMulParams{};
+        void prepare(int size, float fb)
+        {
+            buffer.assign(static_cast<size_t>(juce::jmax(8, size)), 0.0f);
+            idx = 0;
+            feedback = fb;
+        }
 
-    std::atomic<float>* resModelParam  = nullptr;
-    std::atomic<float>* fbDampingParam = nullptr;
-    std::atomic<float>* stiffnessParam = nullptr;
-    std::atomic<float>* excHpfHzParam  = nullptr;
-    std::atomic<float>* excDriveParam  = nullptr;
+        void reset()
+        {
+            std::fill(buffer.begin(), buffer.end(), 0.0f);
+            idx = 0;
+        }
 
-    std::atomic<float>* advLfo1ShapeParam    = nullptr;
-    std::atomic<float>* advLfo1RateHzParam   = nullptr;
-    std::atomic<float>* advLfo1RateSyncParam = nullptr;
-    std::atomic<float>* advLfo1SyncParam     = nullptr;
-    std::atomic<float>* advLfo1PhaseParam    = nullptr;
+        inline float process(float x)
+        {
+            const float bufOut = buffer[static_cast<size_t>(idx)];
+            const float y = -x + bufOut;
+            buffer[static_cast<size_t>(idx)] = x + bufOut * feedback;
+            if (++idx >= static_cast<int>(buffer.size()))
+                idx = 0;
+            return y;
+        }
+    };
 
-    std::atomic<float>* advLfo2ShapeParam    = nullptr;
-    std::atomic<float>* advLfo2RateHzParam   = nullptr;
-    std::atomic<float>* advLfo2RateSyncParam = nullptr;
-    std::atomic<float>* advLfo2SyncParam     = nullptr;
-    std::atomic<float>* advLfo2PhaseParam    = nullptr;
+    // Hilbert 8-stage allpass frequency shifter
+    struct HilbertShifter
+    {
+        float a1[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        float a2[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        double phase = 0.0;
 
-    std::atomic<float>* advEnvAttackParam    = nullptr;
-    std::atomic<float>* advEnvReleaseParam   = nullptr;
-    std::atomic<float>* advEnvAmountParam    = nullptr;
+        void reset()
+        {
+            for (int i = 0; i < 4; ++i) { a1[i] = 0.0f; a2[i] = 0.0f; }
+            phase = 0.0;
+        }
 
-    std::array<std::array<std::atomic<float>*, 6>, 3> modMatrixParams{};
+        inline float process(float x, float shiftHz, double sr)
+        {
+            if (std::abs(shiftHz) < 0.05f)
+                return x;
 
-    std::atomic<float>* inputGainDbParam     = nullptr;
-    std::atomic<float>* outputGainDbParam    = nullptr;
-    std::atomic<float>* stereoWidthParam     = nullptr;
-    std::atomic<float>* dryWetCurveParam     = nullptr;
-    std::atomic<float>* oversamplingParam    = nullptr;
-    std::atomic<float>* limiterOnParam       = nullptr;
-    std::atomic<float>* limiterThreshDbParam = nullptr;
-    std::atomic<float>* smoothTimeMsParam    = nullptr;
+            static constexpr float c1[4] = { 0.6923878f, 0.9360654322959f, 0.9882295226860f, 0.9987488452737f };
+            static constexpr float c2[4] = { 0.4021921162426f, 0.8561710882420f, 0.9722909545651f, 0.9952884791278f };
 
-    // UI Persisted Drawer State
-    std::atomic<bool> advancedPanelOpen{ false };
-    std::atomic<int> advancedActiveTab{ 0 };
-    std::atomic<bool> manualTriggerRequested{ false };
-    int manualImpulseSamplesRemaining = 0;
-    juce::Random impulseRng{ 0x199909 };
+            float in1 = x;
+            float in2 = x;
+            for (int i = 0; i < 4; ++i)
+            {
+                const float y1 = c1[i] * (in1 - a1[i]) + a1[i];
+                a1[i] = in1;
+                in1 = y1;
 
-    // Chord preset sync state
-    std::atomic<int> pendingPresetToApply{ -1 };
-    std::atomic<bool> pendingSwitchToCustom{ false };
-    std::atomic<bool> isSyncingChordSwitches{ false };
+                const float y2 = c2[i] * (in2 - a2[i]) + a2[i];
+                a2[i] = in2;
+                in2 = y2;
+            }
 
-    // Parameter Smoothers
-    float lastSmoothTimeMs = 15.0f;
-    juce::SmoothedValue<float> smoothAttack;
-    juce::SmoothedValue<float> smoothDecay;
-    juce::SmoothedValue<float> smoothWarp;
-    juce::SmoothedValue<float> smoothDrift;
-    juce::SmoothedValue<float> smoothShiftHz;
-    juce::SmoothedValue<float> smoothMotionStrength;
-    juce::SmoothedValue<float> smoothUnison;
-    juce::SmoothedValue<float> smoothFilterTilt;
-    juce::SmoothedValue<float> smoothFilterQ;
-    juce::SmoothedValue<float> smoothFilterLow;
-    juce::SmoothedValue<float> smoothFilterHigh;
-    juce::SmoothedValue<float> smoothDepth;
-    juce::SmoothedValue<float> smoothInputGain;
-    juce::SmoothedValue<float> smoothOutputGain;
-    juce::SmoothedValue<float> smoothStereoWidth;
+            phase += (2.0 * juce::MathConstants<double>::pi * static_cast<double>(shiftHz)) / sr;
+            if (phase > juce::MathConstants<double>::twoPi)
+                phase -= juce::MathConstants<double>::twoPi;
+            else if (phase < -juce::MathConstants<double>::twoPi)
+                phase += juce::MathConstants<double>::twoPi;
 
-    // Pre-allocated Oversampling Engines (1x bypass, 2x, 4x)
+            return in1 * static_cast<float>(std::cos(phase)) - in2 * static_cast<float>(std::sin(phase));
+        }
+    };
+
+    void rebuildTargetFrequencies(std::array<float, kMaxVoices>& freqs, int& activeCount);
+    float evaluateLfo(int shape, float phase) const;
+
+    double currentSampleRate = 44100.0;
+    std::array<VoiceDSP, kMaxVoices> voicesL;
+    std::array<VoiceDSP, kMaxVoices> voicesR;
+
+    // Excitation HPF state
+    float excHpfStateL = 0.0f, excHpfStateR = 0.0f;
+    float excPrevInL = 0.0f, excPrevInR = 0.0f;
+
+    // Stereo allpass diffusers & tilt EQ
+    std::array<SchroederAllpass, 2> diffuserL;
+    std::array<SchroederAllpass, 2> diffuserR;
+    HilbertShifter hilbertL, hilbertR;
+    float tiltLpL = 0.0f, tiltLpR = 0.0f;
+
+    // Transient & envelope follower
+    float envFast = 0.0f;
+    float envSlow = 0.0f;
+    float modEnvState = 0.0f;
+    float transientHold = 0.0f;
+
+    // LFO & Arpeggiator state
+    float lfo1Phase = 0.0f;
+    float lfo2Phase = 0.0f;
+    double arpPhase = 0.0;
+    int arpStep = 0;
+    int arpDir = 1;
+    uint32_t rngState = 0x12345678u;
+
+    // Active MIDI notes bitmask
+    std::array<bool, 128> midiNotesHeld {};
+
+    // Gun topology crossfade state
+    int lastGunMode = 0;
+    int prevGunMode = 0;
+    float gunCrossfade = 1.0f;
+
+    // Smoothed macro parameters
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smDrive;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smSpace;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smDecay;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smTone;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smDensity;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smInGain;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smOutGain;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smWidth;
+
+    std::atomic<bool> panicRequested { false };
+
+    // Oversampling engines (2x and 4x)
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler2x;
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler4x;
-    int lastOversamplingChoice = 0;
 
-    // Dual Resonator Banks for 20ms crossfade
-    std::atomic<int> currentModeIndex{ 0 };
-    int activeMode = 0;
-    int previousMode = 0;
-    int modeCrossfadeSamplesRemaining = 0;
-    int modeCrossfadeTotalSamples = 882;
-
-    breach::dsp::ResonatorBank bankPrimary;
-    breach::dsp::ResonatorBank bankSecondary;
-    breach::dsp::ChordVoicingEngine voicingEngine;
-    std::array<breach::dsp::VoicePitchSpec, breach::kMaxVoices> currentVoiceSpecs{};
-
-    // Excitation Pre-Filter
-    breach::dsp::TptSvf excHpf;
-
-    // Drift Allpass Smear & Shift SSB Shifter
-    breach::dsp::AllpassDiffuser smearDiffuserL1, smearDiffuserL2;
-    breach::dsp::AllpassDiffuser smearDiffuserR1, smearDiffuserR2;
-    breach::dsp::HilbertFrequencyShifter shifterL, shifterR;
-
-    // Motion & Advanced Modulation Sources
-    breach::dsp::MotionLfoBank motionLfo;
-    breach::dsp::MotionLfoBank advLfo1;
-    breach::dsp::MotionLfoBank advLfo2;
-    breach::dsp::EnvelopeFollower advEnvFollower;
-
-    // Wet Filter
-    breach::dsp::SpectralTiltFilter tiltL, tiltR;
-    breach::dsp::TptSvf wetHpfL, wetHpfR;
-    breach::dsp::TptSvf wetLpfL, wetLpfR;
-
-    // Arp Sequencer
-    double arpPhaseAccumulator = 0.0;
-    int arpStepCounter = 0;
-    int arpPingPongDir = 1;
-    int arpRandomVoice = 0;
-    juce::Random arpRng{ 0xB4EAC4 };
-
-    // Transient Detector
-    float fastEnv = 0.0f;
-    float slowEnv = 0.0f;
-    int transientCooldownSamples = 0;
-
-    double baseSampleRate = 44100.0;
-    double preparedEngineRate = 44100.0;
-    int maxBlockSizePrepared = 512;
+    void processCoreBlock(juce::dsp::AudioBlock<float>& block, double effectiveSampleRate, double hostBpm);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BreachResonatorAudioProcessor)
 };

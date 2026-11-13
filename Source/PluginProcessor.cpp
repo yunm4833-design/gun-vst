@@ -1,818 +1,912 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+namespace
+{
+    constexpr const char* kNoteNames[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+
+    // 10 built-in chord semitone masks
+    constexpr int kPresetMasks[10][12] = {
+        { 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0 }, // 0: MAJOR TRIAD (C E G)
+        { 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0 }, // 1: MINOR TRIAD (C D# G)
+        { 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1 }, // 2: MAJ7 (C E G B)
+        { 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0 }, // 3: MIN7 (C D# G A#)
+        { 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0 }, // 4: DOM7 (C E G A#)
+        { 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0 }, // 5: SUS2 (C D G)
+        { 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0 }, // 6: SUS4 (C F G)
+        { 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0 }, // 7: DIM7 (C D# F# A)
+        { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 }, // 8: AUG (C E G#)
+        { 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0 }  // 9: PENTATONIC (C D E G A)
+    };
+}
+
 BreachResonatorAudioProcessor::BreachResonatorAudioProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts(*this, nullptr, "PARAMETERS", breach::createParameterLayout())
+      apvts(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
-    using namespace breach;
-
-    modeParam        = apvts.getRawParameterValue(ParamID::mode);
-    chordPresetParam = apvts.getRawParameterValue(ParamID::chordPreset);
-    rootNoteParam    = apvts.getRawParameterValue(ParamID::rootNote);
-    octaveParam      = apvts.getRawParameterValue(ParamID::octave);
-    spreadParam      = apvts.getRawParameterValue(ParamID::spread);
-    midiModeParam    = apvts.getRawParameterValue(ParamID::midiMode);
-    attackParam      = apvts.getRawParameterValue(ParamID::attack);
-    decayParam       = apvts.getRawParameterValue(ParamID::decay);
-
-    for (size_t i = 0; i < 12; ++i)
-    {
-        noteParams[i] = apvts.getRawParameterValue(ParamID::noteToggles[i]);
-        apvts.addParameterListener(ParamID::noteToggles[i], this);
-    }
-    apvts.addParameterListener(ParamID::chordPreset, this);
-
-    arpOnParam       = apvts.getRawParameterValue(ParamID::arpOn);
-    arpSyncParam     = apvts.getRawParameterValue(ParamID::arpSync);
-    arpRateSyncParam = apvts.getRawParameterValue(ParamID::arpRateSync);
-    arpRateHzParam   = apvts.getRawParameterValue(ParamID::arpRateHz);
-    arpPatternParam  = apvts.getRawParameterValue(ParamID::arpPattern);
-
-    warpParam        = apvts.getRawParameterValue(ParamID::warp);
-    driftParam       = apvts.getRawParameterValue(ParamID::drift);
-    shiftHzParam     = apvts.getRawParameterValue(ParamID::shiftHz);
-
-    motionOnParam       = apvts.getRawParameterValue(ParamID::motionOn);
-    motionStrengthParam = apvts.getRawParameterValue(ParamID::motionStrength);
-    motionSyncParam     = apvts.getRawParameterValue(ParamID::motionSync);
-    motionRateSyncParam = apvts.getRawParameterValue(ParamID::motionRateSync);
-    motionRateHzParam   = apvts.getRawParameterValue(ParamID::motionRateHz);
-    motionShapeParam    = apvts.getRawParameterValue(ParamID::motionShape);
-    unisonParam         = apvts.getRawParameterValue(ParamID::unison);
-
-    filterTiltParam  = apvts.getRawParameterValue(ParamID::filterTilt);
-    filterQParam     = apvts.getRawParameterValue(ParamID::filterQ);
-    filterLowParam   = apvts.getRawParameterValue(ParamID::filterLow);
-    filterHighParam  = apvts.getRawParameterValue(ParamID::filterHigh);
-    depthParam       = apvts.getRawParameterValue(ParamID::depth);
-
-    // Stage 2 Pointers
-    voiceCapParam = apvts.getRawParameterValue(ParamID::voiceCap);
-    for (size_t v = 0; v < kMaxVoices; ++v)
-    {
-        voiceLevelParams[v]    = apvts.getRawParameterValue(ParamID::voiceLevel[v]);
-        voicePanParams[v]      = apvts.getRawParameterValue(ParamID::voicePan[v]);
-        voiceDetuneParams[v]   = apvts.getRawParameterValue(ParamID::voiceDetune[v]);
-        voiceDecayMulParams[v] = apvts.getRawParameterValue(ParamID::voiceDecayMul[v]);
-    }
-
-    resModelParam  = apvts.getRawParameterValue(ParamID::resModel);
-    fbDampingParam = apvts.getRawParameterValue(ParamID::fbDamping);
-    stiffnessParam = apvts.getRawParameterValue(ParamID::stiffness);
-    excHpfHzParam  = apvts.getRawParameterValue(ParamID::excHpfHz);
-    excDriveParam  = apvts.getRawParameterValue(ParamID::excDrive);
-
-    advLfo1ShapeParam    = apvts.getRawParameterValue(ParamID::advLfo1Shape);
-    advLfo1RateHzParam   = apvts.getRawParameterValue(ParamID::advLfo1RateHz);
-    advLfo1RateSyncParam = apvts.getRawParameterValue(ParamID::advLfo1RateSync);
-    advLfo1SyncParam     = apvts.getRawParameterValue(ParamID::advLfo1Sync);
-    advLfo1PhaseParam    = apvts.getRawParameterValue(ParamID::advLfo1Phase);
-
-    advLfo2ShapeParam    = apvts.getRawParameterValue(ParamID::advLfo2Shape);
-    advLfo2RateHzParam   = apvts.getRawParameterValue(ParamID::advLfo2RateHz);
-    advLfo2RateSyncParam = apvts.getRawParameterValue(ParamID::advLfo2RateSync);
-    advLfo2SyncParam     = apvts.getRawParameterValue(ParamID::advLfo2Sync);
-    advLfo2PhaseParam    = apvts.getRawParameterValue(ParamID::advLfo2Phase);
-
-    advEnvAttackParam    = apvts.getRawParameterValue(ParamID::advEnvAttack);
-    advEnvReleaseParam   = apvts.getRawParameterValue(ParamID::advEnvRelease);
-    advEnvAmountParam    = apvts.getRawParameterValue(ParamID::advEnvAmount);
-
-    for (size_t s = 0; s < 3; ++s)
-        for (size_t d = 0; d < 6; ++d)
-            modMatrixParams[s][d] = apvts.getRawParameterValue(ParamID::modMatrix[s][d]);
-
-    inputGainDbParam     = apvts.getRawParameterValue(ParamID::inputGainDb);
-    outputGainDbParam    = apvts.getRawParameterValue(ParamID::outputGainDb);
-    stereoWidthParam     = apvts.getRawParameterValue(ParamID::stereoWidth);
-    dryWetCurveParam     = apvts.getRawParameterValue(ParamID::dryWetCurve);
-    oversamplingParam    = apvts.getRawParameterValue(ParamID::oversampling);
-    limiterOnParam       = apvts.getRawParameterValue(ParamID::limiterOn);
-    limiterThreshDbParam = apvts.getRawParameterValue(ParamID::limiterThreshDb);
-    smoothTimeMsParam    = apvts.getRawParameterValue(ParamID::smoothTimeMs);
-
     oversampler2x = std::make_unique<juce::dsp::Oversampling<float>>(
         2, 1, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true);
     oversampler4x = std::make_unique<juce::dsp::Oversampling<float>>(
         2, 2, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true);
 }
 
-BreachResonatorAudioProcessor::~BreachResonatorAudioProcessor()
+juce::AudioProcessorValueTreeState::ParameterLayout BreachResonatorAudioProcessor::createParameterLayout()
 {
-    cancelPendingUpdate();
-    apvts.removeParameterListener(breach::ParamID::chordPreset, this);
-    for (size_t i = 0; i < 12; ++i)
-        apvts.removeParameterListener(breach::ParamID::noteToggles[i], this);
-}
+    std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-void BreachResonatorAudioProcessor::parameterChanged(const juce::String& parameterID, float newValue)
-{
-    if (isSyncingChordSwitches.load(std::memory_order_acquire))
-        return;
+    // 6 Primary Macro Controls
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("drive", 1), "Drive", juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f), 0.35f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("space", 1), "Space", juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f), 0.30f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("decay", 1), "Decay", juce::NormalisableRange<float>(0.05f, 1.0f, 0.001f), 0.55f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("tone", 1), "Tone", juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f), 0.55f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("density", 1), "Density", juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f), 0.50f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("mix", 1), "Mix", juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f), 0.50f));
 
-    if (parameterID == breach::ParamID::chordPreset)
+    // Gun Resonator Mode (0=PISTOL, 1=SHOTGUN, 2=SMG, 3=SNIPER, 4=REVOLVER)
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("gunMode", 1), "Gun Topology",
+        juce::StringArray{ "PISTOL", "SHOTGUN", "SMG", "SNIPER", "REVOLVER" }, 1));
+
+    // Chord & Scale Controls
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("chordPreset", 1), "Chord Preset",
+        juce::StringArray{ "MAJOR TRIAD", "MINOR TRIAD", "MAJ7", "MIN7", "DOM7", "SUS2", "SUS4", "DIM7", "AUG", "PENTATONIC" }, 7));
+
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("rootNote", 1), "Root Note",
+        juce::StringArray{ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" }, 0));
+
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("octaveSpread", 1), "Octave Spread",
+        juce::StringArray{ "1 OCT", "2 OCT", "3 OCT", "4 OCT" }, 0));
+
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("voiceCap", 1), "Voice Count",
+        juce::StringArray{ "4 VOX", "6 VOX", "8 VOX", "12 VOX" }, 2));
+
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID("midiMode", 1), "MIDI Input Mode", false));
+
+    // 12 Semitone toggles (default DIM7: C, D#, F#, A)
+    for (int i = 0; i < 12; ++i)
     {
-        const int presetIdx = static_cast<int>(std::round(newValue));
-        if (presetIdx > 0)
+        const bool defaultOn = (kPresetMasks[7][i] != 0);
+        params.push_back(std::make_unique<juce::AudioParameterBool>(
+            juce::ParameterID("note_" + juce::String(i), 1),
+            juce::String("Note ") + kNoteNames[i],
+            defaultOn));
+    }
+
+    // Arpeggiator & Motion
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID("arpEnable", 1), "Arp Enable", false));
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("arpDirection", 1), "Arp Direction",
+        juce::StringArray{ "UP", "DOWN", "UP-DN", "RAND", "SYNC" }, 0));
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID("motionEnable", 1), "Motion Enable", true));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("arpRate", 1), "Arp Rate",
+        juce::NormalisableRange<float>(0.5f, 24.0f, 0.01f, 0.5f), 6.0f));
+
+    // Tab A: 12 Per-Voice Controls (48 params)
+    for (int v = 0; v < kMaxVoices; ++v)
+    {
+        const float defaultPan = (v % 2 == 0) ? -0.25f * (static_cast<float>(v) / 11.0f)
+                                              :  0.25f * (static_cast<float>(v) / 11.0f);
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID("vLevel_" + juce::String(v), 1),
+            "Voice " + juce::String(v + 1) + " Level",
+            juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.85f));
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID("vPan_" + juce::String(v), 1),
+            "Voice " + juce::String(v + 1) + " Pan",
+            juce::NormalisableRange<float>(-1.0f, 1.0f, 0.01f), defaultPan));
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID("vDetune_" + juce::String(v), 1),
+            "Voice " + juce::String(v + 1) + " Detune",
+            juce::NormalisableRange<float>(-50.0f, 50.0f, 0.1f), 0.0f));
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID("vDecay_" + juce::String(v), 1),
+            "Voice " + juce::String(v + 1) + " Decay Mul",
+            juce::NormalisableRange<float>(0.25f, 2.0f, 0.01f), 1.0f));
+    }
+
+    // Tab B: Resonator Physics & Excitation (6 params)
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("resTopology", 1), "Resonator Topology",
+        juce::StringArray{ "AUTO (GUN MODE)", "BANDPASS SVF", "COMB STRING", "DUAL FORMANT" }, 0));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("resAttack", 1), "Attack (ms)",
+        juce::NormalisableRange<float>(0.5f, 500.0f, 0.1f, 0.4f), 4.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("fbDamping", 1), "FB Damping",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f), 0.35f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("stiffness", 1), "Stiffness",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f), 0.15f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("excHpf", 1), "Exc HPF (Hz)",
+        juce::NormalisableRange<float>(20.0f, 2000.0f, 1.0f, 0.4f), 120.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("excDrive", 1), "Exc Drive",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f), 0.25f));
+
+    // Tab C: Modulation & Hilbert Shifter (11 + 18 = 29 params)
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("lfo1Shape", 1), "LFO 1 Shape",
+        juce::StringArray{ "SINE", "TRI", "SAW", "SQR", "S&H" }, 0));
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID("lfo1Sync", 1), "LFO 1 Sync", false));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("lfo1Rate", 1), "LFO 1 Rate",
+        juce::NormalisableRange<float>(0.05f, 20.0f, 0.01f, 0.5f), 1.2f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("lfo1Phase", 1), "LFO 1 Phase",
+        juce::NormalisableRange<float>(0.0f, 360.0f, 1.0f), 0.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("lfo2Shape", 1), "LFO 2 Shape",
+        juce::StringArray{ "SINE", "TRI", "SAW", "SQR", "S&H" }, 1));
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID("lfo2Sync", 1), "LFO 2 Sync", false));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("lfo2Rate", 1), "LFO 2 Rate",
+        juce::NormalisableRange<float>(0.05f, 20.0f, 0.01f, 0.5f), 0.35f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("lfo2Phase", 1), "LFO 2 Phase",
+        juce::NormalisableRange<float>(0.0f, 360.0f, 1.0f), 90.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("envAttack", 1), "Env Attack",
+        juce::NormalisableRange<float>(1.0f, 250.0f, 0.5f, 0.5f), 10.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("envRelease", 1), "Env Release",
+        juce::NormalisableRange<float>(10.0f, 1000.0f, 1.0f, 0.5f), 140.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("envAmount", 1), "Env Amount",
+        juce::NormalisableRange<float>(-1.0f, 1.0f, 0.01f), 0.45f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("freqShift", 1), "Shift (Hz)",
+        juce::NormalisableRange<float>(-500.0f, 500.0f, 0.5f), 0.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("stereoUnison", 1), "Unison",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.25f));
+
+    // 3x6 Modulation Matrix (3 sources x 6 targets = 18 params)
+    static constexpr const char* kModSrc[3] = { "lfo1", "lfo2", "env" };
+    static constexpr const char* kModDst[6] = { "warp", "drift", "shift", "q", "tilt", "depth" };
+    for (int s = 0; s < 3; ++s)
+    {
+        for (int d = 0; d < 6; ++d)
         {
-            pendingPresetToApply.store(presetIdx, std::memory_order_release);
-            triggerAsyncUpdate();
+            params.push_back(std::make_unique<juce::AudioParameterFloat>(
+                juce::ParameterID(juce::String("mod_") + kModSrc[s] + "_" + kModDst[d], 1),
+                juce::String("Mod ") + kModSrc[s] + " -> " + kModDst[d],
+                juce::NormalisableRange<float>(-1.0f, 1.0f, 0.01f), 0.0f));
         }
     }
-    else
-    {
-        const int currentPreset = static_cast<int>(chordPresetParam->load(std::memory_order_relaxed));
-        if (currentPreset != 0)
-        {
-            pendingSwitchToCustom.store(true, std::memory_order_release);
-            triggerAsyncUpdate();
-        }
-    }
-}
 
-void BreachResonatorAudioProcessor::handleAsyncUpdate()
-{
-    const int presetIdx = pendingPresetToApply.exchange(-1, std::memory_order_acq_rel);
-    if (presetIdx > 0 && presetIdx < static_cast<int>(breach::ChordPresetType::NumPresets))
-    {
-        isSyncingChordSwitches.store(true, std::memory_order_release);
-        const auto mask = breach::getPitchClassMaskForPreset(static_cast<breach::ChordPresetType>(presetIdx));
-        for (size_t i = 0; i < 12; ++i)
-        {
-            if (auto* p = apvts.getParameter(breach::ParamID::noteToggles[i]))
-            {
-                const float target = mask[i] ? 1.0f : 0.0f;
-                if (std::abs(p->getValue() - target) > 0.01f)
-                    p->setValueNotifyingHost(target);
-            }
-        }
-        isSyncingChordSwitches.store(false, std::memory_order_release);
-        pendingSwitchToCustom.store(false, std::memory_order_release);
-        return;
-    }
+    // Tab D: Global Bus & Engine (7 params)
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("inGain", 1), "In Gain (dB)",
+        juce::NormalisableRange<float>(-24.0f, 24.0f, 0.1f), 0.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("outGain", 1), "Out Gain (dB)",
+        juce::NormalisableRange<float>(-24.0f, 24.0f, 0.1f), 0.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("stereoWidth", 1), "Width (%)",
+        juce::NormalisableRange<float>(0.0f, 200.0f, 1.0f), 115.0f));
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("mixCurve", 1), "Mix Curve",
+        juce::StringArray{ "EQUAL POWER", "LINEAR", "S-CURVE" }, 0));
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("oversampling", 1), "Oversampling",
+        juce::StringArray{ "1X OFF", "2X IIR", "4X IIR" }, 0));
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID("softLimiter", 1), "Soft Limiter", true));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("paramSmoothMs", 1), "Smooth (ms)",
+        juce::NormalisableRange<float>(2.0f, 100.0f, 0.5f), 15.0f));
 
-    if (pendingSwitchToCustom.exchange(false, std::memory_order_acq_rel))
-    {
-        isSyncingChordSwitches.store(true, std::memory_order_release);
-        if (auto* p = apvts.getParameter(breach::ParamID::chordPreset))
-            p->setValueNotifyingHost(0.0f);
-        isSyncingChordSwitches.store(false, std::memory_order_release);
-    }
-}
-
-void BreachResonatorAudioProcessor::setMode(int index)
-{
-    const int clamped = juce::jlimit(0, static_cast<int>(breach::ResonatorMode::NumModes) - 1, index);
-    currentModeIndex.store(clamped, std::memory_order_relaxed);
-
-    if (auto* param = apvts.getParameter(breach::ParamID::mode))
-    {
-        const float normalized = param->convertTo0to1(static_cast<float>(clamped));
-        param->beginChangeGesture();
-        param->setValueNotifyingHost(normalized);
-        param->endChangeGesture();
-    }
+    return { params.begin(), params.end() };
 }
 
 void BreachResonatorAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
-    baseSampleRate = std::max(8000.0, sampleRate);
-    maxBlockSizePrepared = std::max(32, samplesPerBlock);
+    currentSampleRate = juce::jmax(8000.0, sampleRate);
 
-    oversampler2x->initProcessing(static_cast<size_t>(maxBlockSizePrepared));
-    oversampler4x->initProcessing(static_cast<size_t>(maxBlockSizePrepared));
-    oversampler2x->reset();
-    oversampler4x->reset();
+    oversampler2x->initProcessing(static_cast<size_t>(samplesPerBlock));
+    oversampler4x->initProcessing(static_cast<size_t>(samplesPerBlock));
 
-    const int osChoice = static_cast<int>(oversamplingParam->load(std::memory_order_relaxed));
-    lastOversamplingChoice = osChoice;
-    const double osMul = (osChoice == 1) ? 2.0 : ((osChoice == 2) ? 4.0 : 1.0);
-    preparedEngineRate = baseSampleRate * osMul;
+    const int maxCombSamples = static_cast<int>(currentSampleRate * 4.0 / 20.0) + 64;
+    for (int v = 0; v < kMaxVoices; ++v)
+    {
+        voicesL[static_cast<size_t>(v)].combBuffer.assign(static_cast<size_t>(maxCombSamples), 0.0f);
+        voicesR[static_cast<size_t>(v)].combBuffer.assign(static_cast<size_t>(maxCombSamples), 0.0f);
+        voicesL[static_cast<size_t>(v)].reset();
+        voicesR[static_cast<size_t>(v)].reset();
+    }
 
-    modeCrossfadeTotalSamples = std::max(1, static_cast<int>(std::round(preparedEngineRate * 0.020)));
-    modeCrossfadeSamplesRemaining = 0;
+    diffuserL[0].prepare(static_cast<int>(currentSampleRate * 0.0051), 0.48f);
+    diffuserL[1].prepare(static_cast<int>(currentSampleRate * 0.0079), 0.45f);
+    diffuserR[0].prepare(static_cast<int>(currentSampleRate * 0.0057), 0.48f);
+    diffuserR[1].prepare(static_cast<int>(currentSampleRate * 0.0083), 0.45f);
 
-    bankPrimary.prepare(preparedEngineRate);
-    bankSecondary.prepare(preparedEngineRate);
-    voicingEngine.resetMidi();
+    hilbertL.reset();
+    hilbertR.reset();
+    excHpfStateL = excHpfStateR = 0.0f;
+    excPrevInL = excPrevInR = 0.0f;
+    tiltLpL = tiltLpR = 0.0f;
+    envFast = envSlow = modEnvState = transientHold = 0.0f;
 
-    excHpf.prepare(preparedEngineRate);
-
-    smearDiffuserL1.prepare(preparedEngineRate, 25.0f);
-    smearDiffuserL2.prepare(preparedEngineRate, 40.0f);
-    smearDiffuserR1.prepare(preparedEngineRate, 28.0f);
-    smearDiffuserR2.prepare(preparedEngineRate, 43.0f);
-
-    shifterL.prepare(preparedEngineRate);
-    shifterR.prepare(preparedEngineRate);
-
-    motionLfo.prepare(preparedEngineRate);
-    advLfo1.prepare(preparedEngineRate);
-    advLfo2.prepare(preparedEngineRate);
-    advEnvFollower.prepare(preparedEngineRate);
-
-    tiltL.prepare(preparedEngineRate);
-    tiltR.prepare(preparedEngineRate);
-    wetHpfL.prepare(preparedEngineRate);
-    wetHpfR.prepare(preparedEngineRate);
-    wetLpfL.prepare(preparedEngineRate);
-    wetLpfR.prepare(preparedEngineRate);
-
-    lastSmoothTimeMs = smoothTimeMsParam->load(std::memory_order_relaxed);
-    const double rampSec = static_cast<double>(lastSmoothTimeMs) * 0.001;
-    smoothAttack.reset(preparedEngineRate, rampSec);
-    smoothDecay.reset(preparedEngineRate, rampSec);
-    smoothWarp.reset(preparedEngineRate, rampSec);
-    smoothDrift.reset(preparedEngineRate, rampSec);
-    smoothShiftHz.reset(preparedEngineRate, rampSec);
-    smoothMotionStrength.reset(preparedEngineRate, rampSec);
-    smoothUnison.reset(preparedEngineRate, rampSec);
-    smoothFilterTilt.reset(preparedEngineRate, rampSec);
-    smoothFilterQ.reset(preparedEngineRate, rampSec);
-    smoothFilterLow.reset(preparedEngineRate, rampSec);
-    smoothFilterHigh.reset(preparedEngineRate, rampSec);
-    smoothDepth.reset(preparedEngineRate, rampSec);
-    smoothInputGain.reset(preparedEngineRate, rampSec);
-    smoothOutputGain.reset(preparedEngineRate, rampSec);
-    smoothStereoWidth.reset(preparedEngineRate, rampSec);
-
-    activeMode = static_cast<int>(modeParam->load(std::memory_order_relaxed));
-    previousMode = activeMode;
-    currentModeIndex.store(activeMode, std::memory_order_relaxed);
-
-    arpPhaseAccumulator = 0.0;
-    arpStepCounter = 0;
-    fastEnv = slowEnv = 0.0f;
-    transientCooldownSamples = 0;
-    manualImpulseSamplesRemaining = 0;
+    const double smoothSec = 0.015;
+    smDrive.reset(currentSampleRate, smoothSec);
+    smSpace.reset(currentSampleRate, smoothSec);
+    smDecay.reset(currentSampleRate, smoothSec);
+    smTone.reset(currentSampleRate, smoothSec);
+    smDensity.reset(currentSampleRate, smoothSec);
+    smMix.reset(currentSampleRate, smoothSec);
+    smInGain.reset(currentSampleRate, smoothSec);
+    smOutGain.reset(currentSampleRate, smoothSec);
+    smWidth.reset(currentSampleRate, smoothSec);
 }
 
 void BreachResonatorAudioProcessor::releaseResources()
 {
-    bankPrimary.reset();
-    bankSecondary.reset();
     oversampler2x->reset();
     oversampler4x->reset();
 }
 
 bool BreachResonatorAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
-    if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
+    const auto& mainIn = layouts.getMainInputChannelSet();
+    const auto& mainOut = layouts.getMainOutputChannelSet();
+    if (mainOut != juce::AudioChannelSet::stereo() && mainOut != juce::AudioChannelSet::mono())
         return false;
-    if (layouts.getMainInputChannelSet() != juce::AudioChannelSet::stereo()
-        && layouts.getMainInputChannelSet() != juce::AudioChannelSet::mono())
-        return false;
-    return true;
+    return mainIn == mainOut;
 }
 
-double BreachResonatorAudioProcessor::getDivisionInBeats(int rateIndex) noexcept
+void BreachResonatorAudioProcessor::triggerPanicReset()
 {
-    static constexpr std::array<double, 9> kBeats{
-        4.0, 2.0, 1.0, 2.0 / 3.0, 0.5, 1.0 / 3.0, 0.25, 1.0 / 6.0, 0.125
-    };
-    return kBeats[static_cast<size_t>(juce::jlimit(0, 8, rateIndex))];
+    panicRequested.store(true, std::memory_order_release);
+}
+
+void BreachResonatorAudioProcessor::applyChordPreset(int presetIndex)
+{
+    const int idx = juce::jlimit(0, 9, presetIndex);
+    for (int i = 0; i < 12; ++i)
+    {
+        if (auto* p = apvts.getParameter("note_" + juce::String(i)))
+        {
+            const float val = (kPresetMasks[idx][i] != 0) ? 1.0f : 0.0f;
+            p->setValueNotifyingHost(val);
+        }
+    }
+}
+
+float BreachResonatorAudioProcessor::evaluateLfo(int shape, float phase) const
+{
+    const float p = phase - std::floor(phase);
+    switch (shape)
+    {
+        case 0: return std::sin(p * juce::MathConstants<float>::twoPi); // SINE
+        case 1: return 4.0f * std::abs(p - 0.5f) - 1.0f;                // TRI
+        case 2: return 2.0f * p - 1.0f;                                 // SAW
+        case 3: return (p < 0.5f) ? 1.0f : -1.0f;                       // SQR
+        case 4:                                                         // S&H
+        default:
+        {
+            const uint32_t step = static_cast<uint32_t>(std::floor(phase));
+            uint32_t h = step * 2654435761u;
+            h ^= (h >> 16);
+            return (static_cast<float>(h & 0xffffu) / 32767.5f) - 1.0f;
+        }
+    }
+}
+
+void BreachResonatorAudioProcessor::rebuildTargetFrequencies(std::array<float, kMaxVoices>& freqs, int& activeCount)
+{
+    static constexpr int kCapTable[4] = { 4, 6, 8, 12 };
+    const int capIdx = juce::jlimit(0, 3, static_cast<int>(apvts.getRawParameterValue("voiceCap")->load()));
+    const int maxAllowed = kCapTable[capIdx];
+
+    const bool midiMode = apvts.getRawParameterValue("midiMode")->load() > 0.5f;
+    std::vector<float> candidateNotes;
+    candidateNotes.reserve(16);
+
+    if (midiMode)
+    {
+        for (int n = 0; n < 128; ++n)
+        {
+            if (midiNotesHeld[static_cast<size_t>(n)])
+                candidateNotes.push_back(static_cast<float>(n));
+        }
+    }
+
+    if (candidateNotes.empty())
+    {
+        const int root = juce::jlimit(0, 11, static_cast<int>(apvts.getRawParameterValue("rootNote")->load()));
+        const int octaves = juce::jlimit(1, 4, static_cast<int>(apvts.getRawParameterValue("octaveSpread")->load()) + 1);
+
+        std::vector<int> activeSemis;
+        for (int i = 0; i < 12; ++i)
+        {
+            if (apvts.getRawParameterValue("note_" + juce::String(i))->load() > 0.5f)
+                activeSemis.push_back(i);
+        }
+        if (activeSemis.empty())
+            activeSemis.push_back(0);
+
+        const int baseMidi = 48 + root; // C3 + root
+        for (int oct = 0; oct < octaves; ++oct)
+        {
+            for (int semi : activeSemis)
+                candidateNotes.push_back(static_cast<float>(baseMidi + oct * 12 + semi));
+        }
+    }
+
+    activeCount = juce::jlimit(1, maxAllowed, static_cast<int>(candidateNotes.size()));
+    for (int v = 0; v < kMaxVoices; ++v)
+    {
+        const float midiNote = candidateNotes[static_cast<size_t>(v % static_cast<int>(candidateNotes.size()))];
+        const float detuneCents = apvts.getRawParameterValue("vDetune_" + juce::String(v))->load();
+        const float exactMidi = midiNote + detuneCents * 0.01f;
+        freqs[static_cast<size_t>(v)] = 440.0f * std::pow(2.0f, (exactMidi - 69.0f) / 12.0f);
+    }
 }
 
 void BreachResonatorAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
 
-    const int totalNumInputChannels  = getTotalNumInputChannels();
-    const int totalNumOutputChannels = getTotalNumOutputChannels();
     const int numSamples = buffer.getNumSamples();
-
-    for (int i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
-        buffer.clear(i, 0, numSamples);
-
-    if (numSamples == 0)
+    if (numSamples <= 0)
         return;
 
-    // Handle MIDI Note-On/Off
-    const bool newMidiNoteTriggered = voicingEngine.handleMidiBuffer(midiMessages);
-    if (newMidiNoteTriggered)
+    if (buffer.getNumChannels() == 1)
     {
-        bankPrimary.triggerAttackSwell();
-        if (modeCrossfadeSamplesRemaining > 0)
-            bankSecondary.triggerAttackSwell();
+        // Safely process mono if needed
     }
 
-    // Handle Manual UI Trigger button
-    if (manualTriggerRequested.exchange(false, std::memory_order_acquire))
+    if (panicRequested.exchange(false, std::memory_order_acquire))
     {
-        manualImpulseSamplesRemaining = static_cast<int>(baseSampleRate * 0.018); // 18ms punchy impulse burst
-        telemetry.transientPulseCount.fetch_add(1, std::memory_order_relaxed);
-        bankPrimary.triggerAttackSwell();
-    }
-
-    // Check Oversampling rate change (1x / 2x / 4x)
-    const int osChoice = static_cast<int>(oversamplingParam->load(std::memory_order_relaxed));
-    if (osChoice != lastOversamplingChoice)
-    {
-        lastOversamplingChoice = osChoice;
-        const double osMul = (osChoice == 1) ? 2.0 : ((osChoice == 2) ? 4.0 : 1.0);
-        preparedEngineRate = baseSampleRate * osMul;
-        modeCrossfadeTotalSamples = std::max(1, static_cast<int>(std::round(preparedEngineRate * 0.020)));
-        bankPrimary.prepare(preparedEngineRate);
-        bankSecondary.prepare(preparedEngineRate);
-        excHpf.prepare(preparedEngineRate);
-        smearDiffuserL1.prepare(preparedEngineRate, 25.0f);
-        smearDiffuserL2.prepare(preparedEngineRate, 40.0f);
-        smearDiffuserR1.prepare(preparedEngineRate, 28.0f);
-        smearDiffuserR2.prepare(preparedEngineRate, 43.0f);
-        shifterL.prepare(preparedEngineRate);
-        shifterR.prepare(preparedEngineRate);
-        motionLfo.prepare(preparedEngineRate);
-        advLfo1.prepare(preparedEngineRate);
-        advLfo2.prepare(preparedEngineRate);
-        advEnvFollower.prepare(preparedEngineRate);
-        tiltL.prepare(preparedEngineRate);
-        tiltR.prepare(preparedEngineRate);
-        wetHpfL.prepare(preparedEngineRate);
-        wetHpfR.prepare(preparedEngineRate);
-        wetLpfL.prepare(preparedEngineRate);
-        wetLpfR.prepare(preparedEngineRate);
-        oversampler2x->reset();
-        oversampler4x->reset();
-    }
-
-    // Update parameter smoothing ramp time if changed in Global tab
-    const float currentSmoothMs = smoothTimeMsParam->load(std::memory_order_relaxed);
-    if (std::abs(currentSmoothMs - lastSmoothTimeMs) > 0.1f)
-    {
-        lastSmoothTimeMs = currentSmoothMs;
-        const double rampSec = static_cast<double>(currentSmoothMs) * 0.001;
-        smoothAttack.reset(preparedEngineRate, rampSec);
-        smoothDecay.reset(preparedEngineRate, rampSec);
-        smoothWarp.reset(preparedEngineRate, rampSec);
-        smoothDrift.reset(preparedEngineRate, rampSec);
-        smoothShiftHz.reset(preparedEngineRate, rampSec);
-        smoothMotionStrength.reset(preparedEngineRate, rampSec);
-        smoothUnison.reset(preparedEngineRate, rampSec);
-        smoothFilterTilt.reset(preparedEngineRate, rampSec);
-        smoothFilterQ.reset(preparedEngineRate, rampSec);
-        smoothFilterLow.reset(preparedEngineRate, rampSec);
-        smoothFilterHigh.reset(preparedEngineRate, rampSec);
-        smoothDepth.reset(preparedEngineRate, rampSec);
-        smoothInputGain.reset(preparedEngineRate, rampSec);
-        smoothOutputGain.reset(preparedEngineRate, rampSec);
-        smoothStereoWidth.reset(preparedEngineRate, rampSec);
-    }
-
-    // Inject manual UI impulse into input buffer before oversampling if active
-    if (manualImpulseSamplesRemaining > 0)
-    {
-        auto* lPtr = buffer.getWritePointer(0);
-        auto* rPtr = buffer.getWritePointer(totalNumOutputChannels > 1 ? 1 : 0);
-        for (int n = 0; n < numSamples && manualImpulseSamplesRemaining > 0; ++n)
+        for (int v = 0; v < kMaxVoices; ++v)
         {
-            const float env = static_cast<float>(manualImpulseSamplesRemaining) / static_cast<float>(baseSampleRate * 0.018);
-            const float burst = (impulseRng.nextFloat() * 2.0f - 1.0f) * env * env * 0.85f;
-            lPtr[n] += burst;
-            rPtr[n] += burst;
-            --manualImpulseSamplesRemaining;
+            voicesL[static_cast<size_t>(v)].reset();
+            voicesR[static_cast<size_t>(v)].reset();
         }
+        diffuserL[0].reset();
+        diffuserL[1].reset();
+        diffuserR[0].reset();
+        diffuserR[1].reset();
+        hilbertL.reset();
+        hilbertR.reset();
     }
 
-    double bpm = 120.0;
+    // Track incoming MIDI notes
+    for (const auto metadata : midiMessages)
+    {
+        const auto msg = metadata.getMessage();
+        if (msg.isNoteOn())
+            midiNotesHeld[static_cast<size_t>(msg.getNoteNumber())] = true;
+        else if (msg.isNoteOff())
+            midiNotesHeld[static_cast<size_t>(msg.getNoteNumber())] = false;
+        else if (msg.isAllNotesOff() || msg.isAllSoundOff())
+            midiNotesHeld.fill(false);
+    }
+
+    double hostBpm = 120.0;
     if (auto* playHead = getPlayHead())
     {
-        if (const auto pos = playHead->getPosition())
+        if (auto pos = playHead->getPosition())
         {
-            if (const auto hostBpm = pos->getBpm())
-                if (*hostBpm > 10.0)
-                    bpm = *hostBpm;
+            if (auto bpm = pos->getBpm())
+                if (*bpm > 10.0)
+                    hostBpm = *bpm;
         }
     }
 
+    const int osChoice = juce::jlimit(0, 2, static_cast<int>(apvts.getRawParameterValue("oversampling")->load()));
     juce::dsp::AudioBlock<float> baseBlock(buffer);
+
     if (osChoice == 1)
     {
         auto osBlock = oversampler2x->processSamplesUp(baseBlock);
-        processOversampledBlock(osBlock, baseSampleRate * 2.0, bpm);
+        processCoreBlock(osBlock, currentSampleRate * 2.0, hostBpm);
         oversampler2x->processSamplesDown(baseBlock);
     }
     else if (osChoice == 2)
     {
         auto osBlock = oversampler4x->processSamplesUp(baseBlock);
-        processOversampledBlock(osBlock, baseSampleRate * 4.0, bpm);
+        processCoreBlock(osBlock, currentSampleRate * 4.0, hostBpm);
         oversampler4x->processSamplesDown(baseBlock);
     }
     else
     {
-        processOversampledBlock(baseBlock, baseSampleRate, bpm);
+        processCoreBlock(baseBlock, currentSampleRate, hostBpm);
     }
 }
 
-void BreachResonatorAudioProcessor::processOversampledBlock(juce::dsp::AudioBlock<float>& block,
-                                                            double effectiveSampleRate,
-                                                            double bpm)
+void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float>& block, double sr, double hostBpm)
 {
-    const int numSamples = static_cast<int>(block.getNumSamples());
     const int numChannels = static_cast<int>(block.getNumChannels());
-    if (numSamples == 0 || numChannels == 0)
+    const int numSamples = static_cast<int>(block.getNumSamples());
+    if (numChannels <= 0 || numSamples <= 0)
         return;
 
-    // 1. Check Mode Switch (20ms equal-power crossfade)
-    const int requestedMode = static_cast<int>(modeParam->load(std::memory_order_relaxed));
-    if (requestedMode != activeMode)
+    float* chL = block.getChannelPointer(0);
+    float* chR = (numChannels > 1) ? block.getChannelPointer(1) : chL;
+
+    // Update parameter smoothing time
+    const float smoothSec = apvts.getRawParameterValue("paramSmoothMs")->load() * 0.001f;
+    smDrive.reset(sr, smoothSec);
+    smSpace.reset(sr, smoothSec);
+    smDecay.reset(sr, smoothSec);
+    smTone.reset(sr, smoothSec);
+    smDensity.reset(sr, smoothSec);
+    smMix.reset(sr, smoothSec);
+    smInGain.reset(sr, smoothSec);
+    smOutGain.reset(sr, smoothSec);
+    smWidth.reset(sr, smoothSec);
+
+    smDrive.setTargetValue(apvts.getRawParameterValue("drive")->load());
+    smSpace.setTargetValue(apvts.getRawParameterValue("space")->load());
+    smDecay.setTargetValue(apvts.getRawParameterValue("decay")->load());
+    smTone.setTargetValue(apvts.getRawParameterValue("tone")->load());
+    smDensity.setTargetValue(apvts.getRawParameterValue("density")->load());
+    smMix.setTargetValue(apvts.getRawParameterValue("mix")->load());
+    smInGain.setTargetValue(juce::Decibels::decibelsToGain(apvts.getRawParameterValue("inGain")->load()));
+    smOutGain.setTargetValue(juce::Decibels::decibelsToGain(apvts.getRawParameterValue("outGain")->load()));
+    smWidth.setTargetValue(apvts.getRawParameterValue("stereoWidth")->load() * 0.01f);
+
+    const int gunMode = juce::jlimit(0, 4, static_cast<int>(apvts.getRawParameterValue("gunMode")->load()));
+    if (gunMode != lastGunMode)
     {
-        previousMode = activeMode;
-        activeMode = requestedMode;
-        currentModeIndex.store(activeMode, std::memory_order_relaxed);
-        modeCrossfadeSamplesRemaining = modeCrossfadeTotalSamples;
-        bankSecondary.reset();
+        prevGunMode = lastGunMode;
+        lastGunMode = gunMode;
+        gunCrossfade = 0.0f;
     }
 
-    // 2. Update Smoothers
-    smoothAttack.setTargetValue(attackParam->load(std::memory_order_relaxed));
-    smoothDecay.setTargetValue(decayParam->load(std::memory_order_relaxed));
-    smoothWarp.setTargetValue(warpParam->load(std::memory_order_relaxed));
-    smoothDrift.setTargetValue(driftParam->load(std::memory_order_relaxed));
-    smoothShiftHz.setTargetValue(shiftHzParam->load(std::memory_order_relaxed));
-    smoothMotionStrength.setTargetValue(motionStrengthParam->load(std::memory_order_relaxed));
-    smoothUnison.setTargetValue(unisonParam->load(std::memory_order_relaxed));
-    smoothFilterTilt.setTargetValue(filterTiltParam->load(std::memory_order_relaxed));
-    smoothFilterQ.setTargetValue(filterQParam->load(std::memory_order_relaxed));
-    smoothFilterLow.setTargetValue(filterLowParam->load(std::memory_order_relaxed));
-    smoothFilterHigh.setTargetValue(filterHighParam->load(std::memory_order_relaxed));
-    smoothDepth.setTargetValue(depthParam->load(std::memory_order_relaxed));
+    const int topoOverride = juce::jlimit(0, 3, static_cast<int>(apvts.getRawParameterValue("resTopology")->load()));
+    const float attackMs = apvts.getRawParameterValue("resAttack")->load();
+    const float fbDamping = apvts.getRawParameterValue("fbDamping")->load();
+    const float stiffness = apvts.getRawParameterValue("stiffness")->load();
+    const float excHpfHz = apvts.getRawParameterValue("excHpf")->load();
+    const float excDrive = apvts.getRawParameterValue("excDrive")->load();
 
-    smoothInputGain.setTargetValue(juce::Decibels::decibelsToGain(inputGainDbParam->load(std::memory_order_relaxed)));
-    smoothOutputGain.setTargetValue(juce::Decibels::decibelsToGain(outputGainDbParam->load(std::memory_order_relaxed)));
-    smoothStereoWidth.setTargetValue(stereoWidthParam->load(std::memory_order_relaxed));
+    const int lfo1Shape = static_cast<int>(apvts.getRawParameterValue("lfo1Shape")->load());
+    const bool lfo1Sync = apvts.getRawParameterValue("lfo1Sync")->load() > 0.5f;
+    const float lfo1RateRaw = apvts.getRawParameterValue("lfo1Rate")->load();
+    const float lfo1PhaseOff = apvts.getRawParameterValue("lfo1Phase")->load() / 360.0f;
 
-    // 3. Gather Per-Voice Stage 2 Arrays
-    const int voiceCap = breach::voiceCapIndexToCount(static_cast<int>(voiceCapParam->load(std::memory_order_relaxed)));
-    std::array<float, breach::kMaxVoices> perVoiceLevels{};
-    std::array<float, breach::kMaxVoices> perVoicePans{};
-    std::array<float, breach::kMaxVoices> perVoiceDetunes{};
-    std::array<float, breach::kMaxVoices> perVoiceDecayMuls{};
+    const int lfo2Shape = static_cast<int>(apvts.getRawParameterValue("lfo2Shape")->load());
+    const bool lfo2Sync = apvts.getRawParameterValue("lfo2Sync")->load() > 0.5f;
+    const float lfo2RateRaw = apvts.getRawParameterValue("lfo2Rate")->load();
+    const float lfo2PhaseOff = apvts.getRawParameterValue("lfo2Phase")->load() / 360.0f;
 
-    for (size_t v = 0; v < breach::kMaxVoices; ++v)
+    const float envAttMs = apvts.getRawParameterValue("envAttack")->load();
+    const float envRelMs = apvts.getRawParameterValue("envRelease")->load();
+    const float envAmt = apvts.getRawParameterValue("envAmount")->load();
+    const float baseFreqShift = apvts.getRawParameterValue("freqShift")->load();
+    const float unisonAmt = apvts.getRawParameterValue("stereoUnison")->load();
+
+    // Modulation matrix depths
+    const float mLfo1Warp  = apvts.getRawParameterValue("mod_lfo1_warp")->load();
+    const float mLfo1Drift = apvts.getRawParameterValue("mod_lfo1_drift")->load();
+    const float mLfo1Shift = apvts.getRawParameterValue("mod_lfo1_shift")->load();
+    const float mLfo1Q     = apvts.getRawParameterValue("mod_lfo1_q")->load();
+    const float mLfo1Tilt  = apvts.getRawParameterValue("mod_lfo1_tilt")->load();
+    const float mLfo1Depth = apvts.getRawParameterValue("mod_lfo1_depth")->load();
+
+    const float mLfo2Warp  = apvts.getRawParameterValue("mod_lfo2_warp")->load();
+    const float mLfo2Drift = apvts.getRawParameterValue("mod_lfo2_drift")->load();
+    const float mLfo2Shift = apvts.getRawParameterValue("mod_lfo2_shift")->load();
+    const float mLfo2Q     = apvts.getRawParameterValue("mod_lfo2_q")->load();
+    const float mLfo2Tilt  = apvts.getRawParameterValue("mod_lfo2_tilt")->load();
+    const float mLfo2Depth = apvts.getRawParameterValue("mod_lfo2_depth")->load();
+
+    const float mEnvWarp   = apvts.getRawParameterValue("mod_env_warp")->load();
+    const float mEnvDrift  = apvts.getRawParameterValue("mod_env_drift")->load();
+    const float mEnvShift  = apvts.getRawParameterValue("mod_env_shift")->load();
+    const float mEnvQ      = apvts.getRawParameterValue("mod_env_q")->load();
+    const float mEnvTilt   = apvts.getRawParameterValue("mod_env_tilt")->load();
+    const float mEnvDepth  = apvts.getRawParameterValue("mod_env_depth")->load();
+
+    const bool arpOn = apvts.getRawParameterValue("arpEnable")->load() > 0.5f;
+    const int arpDirMode = static_cast<int>(apvts.getRawParameterValue("arpDirection")->load());
+    const bool motionOn = apvts.getRawParameterValue("motionEnable")->load() > 0.5f;
+    const float arpRateHz = apvts.getRawParameterValue("arpRate")->load();
+
+    const int mixCurve = static_cast<int>(apvts.getRawParameterValue("mixCurve")->load());
+    const bool limiterOn = apvts.getRawParameterValue("softLimiter")->load() > 0.5f;
+
+    std::array<float, kMaxVoices> targetFreqs {};
+    int activeVoices = 8;
+    rebuildTargetFrequencies(targetFreqs, activeVoices);
+
+    std::array<float, kMaxVoices> voiceLevels {};
+    std::array<float, kMaxVoices> voicePanL {};
+    std::array<float, kMaxVoices> voicePanR {};
+    std::array<float, kMaxVoices> voiceDecayMul {};
+
+    for (int v = 0; v < kMaxVoices; ++v)
     {
-        perVoiceLevels[v]    = voiceLevelParams[v]->load(std::memory_order_relaxed);
-        perVoicePans[v]      = voicePanParams[v]->load(std::memory_order_relaxed);
-        perVoiceDetunes[v]   = voiceDetuneParams[v]->load(std::memory_order_relaxed);
-        perVoiceDecayMuls[v] = voiceDecayMulParams[v]->load(std::memory_order_relaxed);
+        voiceLevels[static_cast<size_t>(v)] = apvts.getRawParameterValue("vLevel_" + juce::String(v))->load();
+        const float pan = apvts.getRawParameterValue("vPan_" + juce::String(v))->load();
+        const float panAngle = (pan + 1.0f) * 0.25f * juce::MathConstants<float>::pi;
+        voicePanL[static_cast<size_t>(v)] = std::cos(panAngle);
+        voicePanR[static_cast<size_t>(v)] = std::sin(panAngle);
+        voiceDecayMul[static_cast<size_t>(v)] = apvts.getRawParameterValue("vDecay_" + juce::String(v))->load();
     }
 
-    const auto resModel = static_cast<breach::ResonatorModelOverride>(static_cast<int>(resModelParam->load(std::memory_order_relaxed)));
-    const float fbDamping = fbDampingParam->load(std::memory_order_relaxed);
-    const float stiffness = stiffnessParam->load(std::memory_order_relaxed);
-    const float excHpfHz  = excHpfHzParam->load(std::memory_order_relaxed);
-    const float excDrive  = excDriveParam->load(std::memory_order_relaxed);
+    const float hpfCoeff = std::exp(-2.0f * juce::MathConstants<float>::pi * excHpfHz / static_cast<float>(sr));
+    const float attackCoeff = 1.0f - std::exp(-1.0f / (juce::jmax(0.5f, attackMs) * 0.001f * static_cast<float>(sr)));
+    const float modAttCoeff = 1.0f - std::exp(-1.0f / (juce::jmax(1.0f, envAttMs) * 0.001f * static_cast<float>(sr)));
+    const float modRelCoeff = 1.0f - std::exp(-1.0f / (juce::jmax(5.0f, envRelMs) * 0.001f * static_cast<float>(sr)));
+    const float crossfadeInc = 1.0f / (0.020f * static_cast<float>(sr));
 
-    // 4. Modulation Rates & Matrix Weights
-    const bool arpOn = arpOnParam->load(std::memory_order_relaxed) > 0.5f;
-    const bool arpSync = arpSyncParam->load(std::memory_order_relaxed) > 0.5f;
-    const double arpCyclesPerSample = arpSync
-        ? ((bpm / 60.0) / getDivisionInBeats(static_cast<int>(arpRateSyncParam->load(std::memory_order_relaxed)))) / effectiveSampleRate
-        : static_cast<double>(arpRateHzParam->load(std::memory_order_relaxed)) / effectiveSampleRate;
-    const auto arpPattern = static_cast<breach::ArpPattern>(static_cast<int>(arpPatternParam->load(std::memory_order_relaxed)));
+    const float lfo1Hz = lfo1Sync ? static_cast<float>(hostBpm / 60.0) * juce::jlimit(0.125f, 8.0f, lfo1RateRaw * 0.25f) : lfo1RateRaw;
+    const float lfo2Hz = lfo2Sync ? static_cast<float>(hostBpm / 60.0) * juce::jlimit(0.125f, 8.0f, lfo2RateRaw * 0.25f) : lfo2RateRaw;
 
-    const bool motionOn = motionOnParam->load(std::memory_order_relaxed) > 0.5f;
-    const bool motionSync = motionSyncParam->load(std::memory_order_relaxed) > 0.5f;
-    const float motionRateHz = motionSync
-        ? static_cast<float>((bpm / 60.0) / getDivisionInBeats(static_cast<int>(motionRateSyncParam->load(std::memory_order_relaxed))))
-        : motionRateHzParam->load(std::memory_order_relaxed);
-    const auto motionShape = static_cast<breach::MotionShape>(static_cast<int>(motionShapeParam->load(std::memory_order_relaxed)));
+    float sumInSq = 0.0f;
+    float sumOutSq = 0.0f;
 
-    const auto advLfo1Shape = static_cast<breach::MotionShape>(static_cast<int>(advLfo1ShapeParam->load(std::memory_order_relaxed)));
-    const bool advLfo1Sync  = advLfo1SyncParam->load(std::memory_order_relaxed) > 0.5f;
-    const float advLfo1Rate = advLfo1Sync
-        ? static_cast<float>((bpm / 60.0) / getDivisionInBeats(static_cast<int>(advLfo1RateSyncParam->load(std::memory_order_relaxed))))
-        : advLfo1RateHzParam->load(std::memory_order_relaxed);
-    const float advLfo1PhaseNorm = advLfo1PhaseParam->load(std::memory_order_relaxed) / 360.0f;
-
-    const auto advLfo2Shape = static_cast<breach::MotionShape>(static_cast<int>(advLfo2ShapeParam->load(std::memory_order_relaxed)));
-    const bool advLfo2Sync  = advLfo2SyncParam->load(std::memory_order_relaxed) > 0.5f;
-    const float advLfo2Rate = advLfo2Sync
-        ? static_cast<float>((bpm / 60.0) / getDivisionInBeats(static_cast<int>(advLfo2RateSyncParam->load(std::memory_order_relaxed))))
-        : advLfo2RateHzParam->load(std::memory_order_relaxed);
-    const float advLfo2PhaseNorm = advLfo2PhaseParam->load(std::memory_order_relaxed) / 360.0f;
-
-    const float envAttMs  = advEnvAttackParam->load(std::memory_order_relaxed);
-    const float envRelMs  = advEnvReleaseParam->load(std::memory_order_relaxed);
-    const float envAmount = advEnvAmountParam->load(std::memory_order_relaxed);
-
-    std::array<std::array<float, 6>, 3> mat{};
-    for (size_t s = 0; s < 3; ++s)
-        for (size_t d = 0; d < 6; ++d)
-            mat[s][d] = modMatrixParams[s][d]->load(std::memory_order_relaxed);
-
-    const auto dwCurve = static_cast<breach::DryWetCurveType>(static_cast<int>(dryWetCurveParam->load(std::memory_order_relaxed)));
-    const bool limiterEnabled = limiterOnParam->load(std::memory_order_relaxed) > 0.5f;
-    const float limiterThreshLin = juce::Decibels::decibelsToGain(limiterThreshDbParam->load(std::memory_order_relaxed));
-
-    std::array<bool, 12> pitchClasses{};
-    for (size_t i = 0; i < 12; ++i)
-        pitchClasses[i] = noteParams[i]->load(std::memory_order_relaxed) > 0.5f;
-
-    const bool midiMode = midiModeParam->load(std::memory_order_relaxed) > 0.5f;
-    const int rootNote = static_cast<int>(rootNoteParam->load(std::memory_order_relaxed));
-    const int baseOctave = static_cast<int>(octaveParam->load(std::memory_order_relaxed));
-    const int spreadOctaves = static_cast<int>(spreadParam->load(std::memory_order_relaxed));
-
-    auto* leftData  = block.getChannelPointer(0);
-    auto* rightData = block.getChannelPointer(numChannels > 1 ? 1 : 0);
-
-    float sumSqL = 0.0f;
-    float sumSqR = 0.0f;
-    float blockPeak = 0.0f;
-    int currentLitVoice = -1;
-    int lastActiveVoiceCount = voiceCap;
-    uint16_t lastActiveMask = 0;
-
-    std::array<float, breach::kMaxVoices> arpGates{};
-    arpGates.fill(1.0f);
-
-    for (int n = 0; n < numSamples; ++n)
+    for (int i = 0; i < numSamples; ++i)
     {
-        const float inGain = smoothInputGain.getNextValue();
-        const float dryL = leftData[n] * inGain;
-        const float dryR = rightData[n] * inGain;
+        const float driveVal   = smDrive.getNextValue();
+        const float spaceVal   = smSpace.getNextValue();
+        const float decayVal   = smDecay.getNextValue();
+        const float toneVal    = smTone.getNextValue();
+        const float densityVal = smDensity.getNextValue();
+        const float mixVal     = smMix.getNextValue();
+        const float inGainLin  = smInGain.getNextValue();
+        const float outGainLin = smOutGain.getNextValue();
+        const float widthVal   = smWidth.getNextValue();
+
+        if (gunCrossfade < 1.0f)
+            gunCrossfade = juce::jmin(1.0f, gunCrossfade + crossfadeInc);
+
+        const float dryL = chL[i] * inGainLin;
+        const float dryR = (numChannels > 1 ? chR[i] : chL[i]) * inGainLin;
         const float monoIn = 0.5f * (dryL + dryR);
+        sumInSq += monoIn * monoIn;
 
-        sumSqL += dryL * dryL;
-        sumSqR += dryR * dryR;
-        const float absPeak = std::max(std::abs(dryL), std::abs(dryR));
-        blockPeak = std::max(blockPeak, absPeak);
-
-        fastEnv = 0.92f * fastEnv + 0.08f * absPeak;
-        slowEnv = 0.9985f * slowEnv + 0.0015f * absPeak;
-        if (transientCooldownSamples > 0)
-            --transientCooldownSamples;
-
-        if (transientCooldownSamples == 0 && fastEnv > 0.14f && fastEnv > slowEnv * 2.6f)
-        {
-            telemetry.transientPulseCount.fetch_add(1, std::memory_order_relaxed);
-            transientCooldownSamples = static_cast<int>(effectiveSampleRate * 0.085);
-            bankPrimary.triggerAttackSwell();
-        }
-
-        // Advance LFOs & Env Follower
-        motionLfo.advance(motionRateHz);
-        advLfo1.advance(advLfo1Rate);
-        advLfo2.advance(advLfo2Rate);
-
-        const float sLfo1 = advLfo1.getVoiceValue(0, 1, advLfo1Shape, advLfo1PhaseNorm);
-        const float sLfo2 = advLfo2.getVoiceValue(0, 1, advLfo2Shape, advLfo2PhaseNorm);
-        const float sEnv  = advEnvFollower.process(monoIn, envAttMs, envRelMs) * envAmount;
-
-        auto evalMod = [&](int destIdx) noexcept -> float
-        {
-            return sLfo1 * mat[0][static_cast<size_t>(destIdx)]
-                 + sLfo2 * mat[1][static_cast<size_t>(destIdx)]
-                 + sEnv  * mat[2][static_cast<size_t>(destIdx)];
-        };
-
-        const float attackMs      = smoothAttack.getNextValue();
-        const float decayVal      = smoothDecay.getNextValue();
-        const float baseWarp      = smoothWarp.getNextValue();
-        const float baseDrift     = smoothDrift.getNextValue();
-        const float baseShift     = smoothShiftHz.getNextValue();
-        const float motionStr     = smoothMotionStrength.getNextValue();
-        const float unisonVal     = smoothUnison.getNextValue();
-        const float baseTilt      = smoothFilterTilt.getNextValue();
-        const float baseQ         = smoothFilterQ.getNextValue();
-        const float rawLowHz      = smoothFilterLow.getNextValue();
-        const float rawHighHz     = smoothFilterHigh.getNextValue();
-        const float baseDepth     = smoothDepth.getNextValue();
-        const float outGain       = smoothOutputGain.getNextValue();
-        const float stereoWidth   = smoothStereoWidth.getNextValue();
-
-        const float modWarp  = juce::jlimit(-1.0f, 1.0f, baseWarp  + evalMod(0));
-        const float modDrift = juce::jlimit(0.0f,  1.0f, baseDrift + evalMod(1));
-        const float modShift = juce::jlimit(-500.0f, 500.0f, baseShift + evalMod(2) * 350.0f);
-        const float modQ     = juce::jlimit(0.0f,  1.0f, baseQ     + evalMod(3));
-        const float modTilt  = juce::jlimit(-1.0f, 1.0f, baseTilt  + evalMod(4));
-        const float modDepth = juce::jlimit(0.0f,  1.0f, baseDepth + evalMod(5));
-
-        const int activeVoiceCount = voicingEngine.computeVoices(
-            pitchClasses, rootNote, baseOctave, spreadOctaves,
-            midiMode, modWarp, stiffness, voiceCap,
-            perVoicePans, perVoiceDetunes, currentVoiceSpecs, lastActiveMask);
-        lastActiveVoiceCount = activeVoiceCount;
-
-        // Arp Sequencer
-        if (arpOn && activeVoiceCount > 0)
-        {
-            arpPhaseAccumulator += arpCyclesPerSample;
-            if (arpPhaseAccumulator >= 1.0)
-            {
-                arpPhaseAccumulator -= 1.0;
-                if (arpPattern == breach::ArpPattern::UpDown && activeVoiceCount > 1)
-                {
-                    arpStepCounter += arpPingPongDir;
-                    if (arpStepCounter >= activeVoiceCount - 1) { arpStepCounter = activeVoiceCount - 1; arpPingPongDir = -1; }
-                    else if (arpStepCounter <= 0)               { arpStepCounter = 0; arpPingPongDir = 1; }
-                }
-                else
-                {
-                    arpStepCounter = (arpStepCounter + 1) % activeVoiceCount;
-                }
-                arpRandomVoice = arpRng.nextInt(activeVoiceCount);
-            }
-
-            const bool gateOpen = (arpPhaseAccumulator <= 0.65);
-            int targetVoice = 0;
-            switch (arpPattern)
-            {
-                case breach::ArpPattern::Up:
-                case breach::ArpPattern::UpDown:
-                    targetVoice = arpStepCounter % activeVoiceCount;
-                    break;
-                case breach::ArpPattern::Down:
-                    targetVoice = (activeVoiceCount - 1) - (arpStepCounter % activeVoiceCount);
-                    break;
-                case breach::ArpPattern::Random:
-                    targetVoice = arpRandomVoice % activeVoiceCount;
-                    break;
-                case breach::ArpPattern::Simultaneous:
-                    targetVoice = -1;
-                    break;
-            }
-
-            currentLitVoice = gateOpen ? targetVoice : -1;
-            for (int v = 0; v < breach::kMaxVoices; ++v)
-            {
-                if (v >= activeVoiceCount)
-                    arpGates[static_cast<size_t>(v)] = 0.0f;
-                else if (arpPattern == breach::ArpPattern::Simultaneous)
-                    arpGates[static_cast<size_t>(v)] = gateOpen ? 1.0f : 0.0f;
-                else
-                    arpGates[static_cast<size_t>(v)] = (gateOpen && v == targetVoice) ? 1.0f : 0.0f;
-            }
-        }
+        // Transient detector & envelope follower
+        const float absIn = std::abs(monoIn);
+        envFast = 0.96f * envFast + 0.04f * absIn;
+        envSlow = 0.9985f * envSlow + 0.0015f * absIn;
+        const float delta = juce::jmax(0.0f, envFast - envSlow * 1.45f);
+        if (delta > 0.035f)
+            transientHold = juce::jmin(1.0f, transientHold + delta * 6.0f);
         else
+            transientHold *= 0.9994f;
+
+        if (absIn > modEnvState)
+            modEnvState += modAttCoeff * (absIn - modEnvState);
+        else
+            modEnvState += modRelCoeff * (absIn - modEnvState);
+
+        // Advance LFOs
+        lfo1Phase += lfo1Hz / static_cast<float>(sr);
+        if (lfo1Phase >= 1000.0f) lfo1Phase -= 1000.0f;
+        lfo2Phase += lfo2Hz / static_cast<float>(sr);
+        if (lfo2Phase >= 1000.0f) lfo2Phase -= 1000.0f;
+
+        const float lfo1Out = evaluateLfo(lfo1Shape, lfo1Phase + lfo1PhaseOff);
+        const float lfo2Out = evaluateLfo(lfo2Shape, lfo2Phase + lfo2PhaseOff);
+        const float envOut  = juce::jlimit(-1.0f, 1.0f, modEnvState * 4.0f * envAmt);
+
+        // Mod matrix sums
+        const float modWarp  = juce::jlimit(-1.0f, 1.0f, lfo1Out * mLfo1Warp  + lfo2Out * mLfo2Warp  + envOut * mEnvWarp);
+        const float modDrift = juce::jlimit(-1.0f, 1.0f, lfo1Out * mLfo1Drift + lfo2Out * mLfo2Drift + envOut * mEnvDrift);
+        const float modShift = juce::jlimit(-1.0f, 1.0f, lfo1Out * mLfo1Shift + lfo2Out * mLfo2Shift + envOut * mEnvShift);
+        const float modQ     = juce::jlimit(-1.0f, 1.0f, lfo1Out * mLfo1Q     + lfo2Out * mLfo2Q     + envOut * mEnvQ);
+        const float modTilt  = juce::jlimit(-1.0f, 1.0f, lfo1Out * mLfo1Tilt  + lfo2Out * mLfo2Tilt  + envOut * mEnvTilt);
+        const float modDepth = juce::jlimit(-1.0f, 1.0f, lfo1Out * mLfo1Depth + lfo2Out * mLfo2Depth + envOut * mEnvDepth);
+
+        // Arpeggiator stepping
+        if (arpOn)
         {
-            for (int v = 0; v < breach::kMaxVoices; ++v)
-                arpGates[static_cast<size_t>(v)] = (v < activeVoiceCount) ? 1.0f : 0.0f;
-            currentLitVoice = -1;
-        }
-
-        // Excitation Pre-Filter (HPF) + Excitation Drive
-        excHpf.setParameters(excHpfHz, 0.707f);
-        float excitedSignal = excHpf.processHighpass(monoIn);
-        if (excDrive > 0.001f)
-        {
-            const float preGain = 1.0f + excDrive * 5.5f;
-            excitedSignal = breach::dsp::fastTanh(excitedSignal * preGain) / std::sqrt(preGain);
-        }
-
-        // Resonator Bank
-        float wetL = 0.0f;
-        float wetR = 0.0f;
-
-        if (modeCrossfadeSamplesRemaining > 0)
-        {
-            float outPrevL = 0.0f, outPrevR = 0.0f;
-            float outNextL = 0.0f, outNextR = 0.0f;
-
-            bankPrimary.processSample(excitedSignal, static_cast<breach::ResonatorMode>(previousMode), resModel,
-                                      activeVoiceCount, currentVoiceSpecs, arpGates,
-                                      perVoiceLevels, perVoiceDecayMuls,
-                                      attackMs, decayVal, fbDamping, stiffness, modQ, modDrift, unisonVal,
-                                      motionLfo, motionOn, motionStr, motionShape, outPrevL, outPrevR);
-
-            bankSecondary.processSample(excitedSignal, static_cast<breach::ResonatorMode>(activeMode), resModel,
-                                        activeVoiceCount, currentVoiceSpecs, arpGates,
-                                        perVoiceLevels, perVoiceDecayMuls,
-                                        attackMs, decayVal, fbDamping, stiffness, modQ, modDrift, unisonVal,
-                                        motionLfo, motionOn, motionStr, motionShape, outNextL, outNextR);
-
-            const float alpha = 1.0f - (static_cast<float>(modeCrossfadeSamplesRemaining)
-                                      / static_cast<float>(modeCrossfadeTotalSamples));
-            const float fadeOut = std::cos(alpha * juce::MathConstants<float>::halfPi);
-            const float fadeIn  = std::sin(alpha * juce::MathConstants<float>::halfPi);
-
-            wetL = outPrevL * fadeOut + outNextL * fadeIn;
-            wetR = outPrevR * fadeOut + outNextR * fadeIn;
-
-            --modeCrossfadeSamplesRemaining;
-            if (modeCrossfadeSamplesRemaining == 0)
+            arpPhase += static_cast<double>(arpRateHz) / sr;
+            if (arpPhase >= 1.0)
             {
-                bankPrimary = std::move(bankSecondary);
-                bankSecondary.prepare(effectiveSampleRate);
+                arpPhase -= 1.0;
+                if (arpDirMode == 0) // UP
+                {
+                    arpStep = (arpStep + 1) % activeVoices;
+                }
+                else if (arpDirMode == 1) // DOWN
+                {
+                    arpStep = (arpStep - 1 + activeVoices) % activeVoices;
+                }
+                else if (arpDirMode == 2) // UP-DN
+                {
+                    arpStep += arpDir;
+                    if (arpStep >= activeVoices - 1) { arpStep = activeVoices - 1; arpDir = -1; }
+                    else if (arpStep <= 0) { arpStep = 0; arpDir = 1; }
+                }
+                else if (arpDirMode == 3) // RAND
+                {
+                    rngState = rngState * 1664525u + 1013904223u;
+                    arpStep = static_cast<int>((rngState >> 16) % static_cast<uint32_t>(activeVoices));
+                }
+                else // SYNC (chord pulse)
+                {
+                    arpStep = (arpStep + 1) % activeVoices;
+                }
             }
         }
-        else
+
+        // Excitation HPF + Saturation Drive
+        const float hpL = hpfCoeff * (excHpfStateL + dryL - excPrevInL);
+        const float hpR = hpfCoeff * (excHpfStateR + dryR - excPrevInR);
+        excPrevInL = dryL;
+        excPrevInR = dryR;
+        excHpfStateL = hpL;
+        excHpfStateR = hpR;
+
+        const float totalDrive = 1.0f + (driveVal * 4.5f + excDrive * 5.5f);
+        const float excL = std::tanh(hpL * totalDrive);
+        const float excR = std::tanh(hpR * totalDrive);
+
+        // Determine active topology (0=SVF Bandpass, 1=Waveguide Comb, 2=Dual Formant)
+        int activeTopo = 0;
+        if (topoOverride > 0)
+            activeTopo = topoOverride - 1;
+        else if (gunMode == 1)
+            activeTopo = 1; // SHOTGUN -> Waveguide Comb
+        else if (gunMode == 2)
+            activeTopo = 2; // SMG -> Dual Formant
+
+        float resSumL = 0.0f;
+        float resSumR = 0.0f;
+
+        const float effectiveDensity = juce::jlimit(0.05f, 1.0f, densityVal + modDepth * 0.35f);
+        const int voicesToRender = juce::jlimit(1, activeVoices,
+            static_cast<int>(std::ceil(effectiveDensity * static_cast<float>(activeVoices))));
+
+        for (int v = 0; v < voicesToRender; ++v)
         {
-            bankPrimary.processSample(excitedSignal, static_cast<breach::ResonatorMode>(activeMode), resModel,
-                                      activeVoiceCount, currentVoiceSpecs, arpGates,
-                                      perVoiceLevels, perVoiceDecayMuls,
-                                      attackMs, decayVal, fbDamping, stiffness, modQ, modDrift, unisonVal,
-                                      motionLfo, motionOn, motionStr, motionShape, wetL, wetR);
+            const size_t vs = static_cast<size_t>(v);
+            auto& vL = voicesL[vs];
+            auto& vR = voicesR[vs];
+
+            // Arpeggiator & Motion gating
+            float gateTarget = 1.0f;
+            if (arpOn && arpDirMode != 4)
+            {
+                gateTarget = (v == arpStep) ? 1.15f : 0.12f;
+            }
+            if (motionOn)
+            {
+                const float phaseSpread = static_cast<float>(v) / static_cast<float>(voicesToRender);
+                const float motionWave = 0.72f + 0.28f * std::sin((lfo1Phase + phaseSpread) * juce::MathConstants<float>::twoPi);
+                gateTarget *= motionWave;
+            }
+
+            vL.attackEnv += attackCoeff * (gateTarget - vL.attackEnv);
+            vR.attackEnv = vL.attackEnv;
+
+            // Pitch warp + stereo unison detuning
+            const float unisonOffset = ((v % 2 == 0) ? -1.0f : 1.0f) * unisonAmt * 0.008f;
+            const float warpFactor = 1.0f + modWarp * 0.06f + stiffness * 0.0025f * static_cast<float>(v * v);
+            const float fL = juce::jlimit(25.0f, static_cast<float>(sr * 0.42), targetFreqs[vs] * warpFactor * (1.0f + unisonOffset));
+            const float fR = juce::jlimit(25.0f, static_cast<float>(sr * 0.42), targetFreqs[vs] * warpFactor * (1.0f - unisonOffset));
+
+            const float vDecay = juce::jlimit(0.05f, 0.9985f,
+                0.82f + 0.176f * std::pow(juce::jlimit(0.05f, 1.0f, decayVal * voiceDecayMul[vs]), 0.35f));
+
+            float outVoiceL = 0.0f;
+            float outVoiceR = 0.0f;
+
+            if (activeTopo == 1)
+            {
+                // Waveguide Fractional-Delay Comb String with Lagrange Interpolation & Damping
+                const auto runComb = [&](VoiceDSP& vox, float inSample, float freq) -> float
+                {
+                    const int bufLen = static_cast<int>(vox.combBuffer.size());
+                    if (bufLen < 16)
+                        return 0.0f;
+
+                    const float delaySamples = juce::jlimit(4.0f, static_cast<float>(bufLen - 6), static_cast<float>(sr) / freq);
+                    const int dInt = static_cast<int>(delaySamples);
+                    const float frac = delaySamples - static_cast<float>(dInt);
+
+                    auto readAt = [&](int offset) -> float
+                    {
+                        int r = vox.combWritePos - offset;
+                        while (r < 0) r += bufLen;
+                        while (r >= bufLen) r -= bufLen;
+                        return vox.combBuffer[static_cast<size_t>(r)];
+                    };
+
+                    // 4-point Lagrange interpolation
+                    const float y0 = readAt(dInt - 1);
+                    const float y1 = readAt(dInt);
+                    const float y2 = readAt(dInt + 1);
+                    const float y3 = readAt(dInt + 2);
+
+                    const float c0 = -frac * (frac - 1.0f) * (frac - 2.0f) / 6.0f;
+                    const float c1 =  (frac + 1.0f) * (frac - 1.0f) * (frac - 2.0f) / 2.0f;
+                    const float c2 = -(frac + 1.0f) * frac * (frac - 2.0f) / 2.0f;
+                    const float c3 =  (frac + 1.0f) * frac * (frac - 1.0f) / 6.0f;
+                    const float delayed = c0 * y0 + c1 * y1 + c2 * y2 + c3 * y3;
+
+                    // Loop damping lowpass
+                    const float dampAlpha = juce::jlimit(0.08f, 0.92f, 1.0f - fbDamping * 0.78f);
+                    vox.combLpState += dampAlpha * (delayed - vox.combLpState);
+
+                    // Allpass dispersion for string stiffness
+                    const float apCoeff = stiffness * 0.45f;
+                    const float apOut = -apCoeff * vox.combLpState + vox.allpassState;
+                    vox.allpassState = vox.combLpState + apCoeff * apOut;
+
+                    const float fbGain = juce::jlimit(0.50f, 0.996f, vDecay);
+                    const float nextSample = std::tanh(inSample * 0.35f + apOut * fbGain);
+
+                    vox.combBuffer[static_cast<size_t>(vox.combWritePos)] = nextSample;
+                    if (++vox.combWritePos >= bufLen)
+                        vox.combWritePos = 0;
+
+                    return apOut;
+                };
+
+                outVoiceL = runComb(vL, excL, fL);
+                outVoiceR = runComb(vR, excR, fR);
+            }
+            else
+            {
+                // Zero-Delay Feedback TPT State Variable Bandpass (or Coupled Dual Formant)
+                const float baseQ = (gunMode == 3 || gunMode == 4) ? 28.0f : 14.0f;
+                const float Q = juce::jlimit(2.0f, 65.0f, baseQ * (0.4f + vDecay * 1.4f) * (1.0f + modQ * 0.5f));
+                const float k = 1.0f / Q;
+
+                const auto runSvf = [&](float inS, float freq, float& ic1, float& ic2) -> float
+                {
+                    const float g = std::tan(juce::MathConstants<float>::pi * freq / static_cast<float>(sr));
+                    const float a1 = 1.0f / (1.0f + g * (g + k));
+                    const float a2 = g * a1;
+                    const float a3 = g * a2;
+
+                    const float v3 = inS - ic2;
+                    const float v1 = a1 * ic1 + a2 * v3;
+                    const float v2 = ic2 + a2 * ic1 + a3 * v3;
+                    ic1 = 2.0f * v1 - ic1;
+                    ic2 = 2.0f * v2 - ic2;
+                    return v1 * std::sqrt(Q * 0.25f);
+                };
+
+                float bpL = runSvf(excL, fL, vL.svf1Ic1, vL.svf1Ic2);
+                float bpR = runSvf(excR, fR, vR.svf1Ic1, vR.svf1Ic2);
+
+                if (activeTopo == 2) // Dual Formant (SMG)
+                {
+                    const float f2L = juce::jmin(static_cast<float>(sr * 0.42), fL * 1.498f);
+                    const float f2R = juce::jmin(static_cast<float>(sr * 0.42), fR * 1.498f);
+                    bpL = 0.65f * bpL + 0.55f * runSvf(excL + bpL * 0.25f, f2L, vL.svf2Ic1, vL.svf2Ic2);
+                    bpR = 0.65f * bpR + 0.55f * runSvf(excR + bpR * 0.25f, f2R, vR.svf2Ic1, vR.svf2Ic2);
+                }
+                else if (gunMode == 3) // SNIPER asymmetric harmonic saturation
+                {
+                    bpL = std::tanh(bpL * 1.6f + 0.12f * bpL * bpL);
+                    bpR = std::tanh(bpR * 1.6f + 0.12f * bpR * bpR);
+                }
+
+                outVoiceL = bpL;
+                outVoiceR = bpR;
+            }
+
+            const float vGain = voiceLevels[vs] * vL.attackEnv;
+            outVoiceL *= vGain;
+            outVoiceR *= vGain;
+
+            vL.energyMetric = 0.995f * vL.energyMetric + 0.005f * (std::abs(outVoiceL) + std::abs(outVoiceR));
+
+            // Equal-power stereo panning per voice
+            resSumL += outVoiceL * voicePanL[vs];
+            resSumR += outVoiceR * voicePanR[vs];
         }
 
-        // Drift Allpass Smear
-        if (modDrift > 0.005f)
+        const float normScale = 1.0f / std::sqrt(static_cast<float>(voicesToRender));
+        float wetL = resSumL * normScale;
+        float wetR = resSumR * normScale;
+
+        // Schroeder Allpass Space Diffuser (boosted in REVOLVER / Space)
+        const float spaceAmount = juce::jlimit(0.0f, 1.0f, spaceVal + (gunMode == 4 ? 0.35f : 0.0f) + modDrift * 0.25f);
+        if (spaceAmount > 0.005f)
         {
-            const float smearGain = modDrift * 0.62f;
-            wetL = smearDiffuserL1.process(wetL, static_cast<float>(effectiveSampleRate * 0.0073), smearGain);
-            wetL = smearDiffuserL2.process(wetL, static_cast<float>(effectiveSampleRate * 0.0131), smearGain);
-            wetR = smearDiffuserR1.process(wetR, static_cast<float>(effectiveSampleRate * 0.0089), smearGain);
-            wetR = smearDiffuserR2.process(wetR, static_cast<float>(effectiveSampleRate * 0.0157), smearGain);
+            const float diffL = diffuserL[1].process(diffuserL[0].process(wetL));
+            const float diffR = diffuserR[1].process(diffuserR[0].process(wetR));
+            wetL = wetL * (1.0f - spaceAmount * 0.65f) + diffL * (spaceAmount * 0.85f);
+            wetR = wetR * (1.0f - spaceAmount * 0.65f) + diffR * (spaceAmount * 0.85f);
         }
 
-        // Shift SSB Shifter
-        wetL = shifterL.process(wetL, modShift);
-        wetR = shifterR.process(wetR, modShift);
+        // Hilbert Frequency Shifter
+        const float totalShiftHz = baseFreqShift + modShift * 180.0f;
+        if (std::abs(totalShiftHz) > 0.05f)
+        {
+            wetL = hilbertL.process(wetL, totalShiftHz, sr);
+            wetR = hilbertR.process(wetR, totalShiftHz, sr);
+        }
 
-        // Filter Tilt + Range Band-Limit
-        wetL = tiltL.process(wetL, modTilt);
-        wetR = tiltR.process(wetR, modTilt);
+        // Tilt EQ driven by Tone macro + Mod Tilt
+        const float tiltControl = juce::jlimit(0.0f, 1.0f, toneVal + modTilt * 0.35f);
+        const float tiltCoeff = 0.12f;
+        tiltLpL += tiltCoeff * (wetL - tiltLpL);
+        tiltLpR += tiltCoeff * (wetR - tiltLpR);
+        const float tiltHpL = wetL - tiltLpL;
+        const float tiltHpR = wetR - tiltLpR;
+        const float lowGain  = 1.45f - tiltControl * 0.90f;
+        const float highGain = 0.55f + tiltControl * 1.15f;
+        wetL = tiltLpL * lowGain + tiltHpL * highGain;
+        wetR = tiltLpR * lowGain + tiltHpR * highGain;
 
-        const float safeLowHz  = juce::jlimit(20.0f, 18000.0f, rawLowHz);
-        const float safeHighHz = juce::jlimit(safeLowHz + 40.0f, 20000.0f, rawHighHz);
-
-        wetHpfL.setParameters(safeLowHz, 0.707f);
-        wetHpfR.setParameters(safeLowHz, 0.707f);
-        wetLpfL.setParameters(safeHighHz, 0.707f);
-        wetLpfR.setParameters(safeHighHz, 0.707f);
-
-        wetL = wetLpfL.processLowpass(wetHpfL.processHighpass(wetL));
-        wetR = wetLpfR.processLowpass(wetHpfR.processHighpass(wetR));
-
-        // Global Stereo Width (Mid/Side processing on wet signal)
-        const float mid  = 0.5f * (wetL + wetR);
-        const float side = 0.5f * (wetL - wetR) * stereoWidth;
+        // Stereo Width M/S processing
+        const float mid = 0.5f * (wetL + wetR);
+        const float side = 0.5f * (wetL - wetR) * widthVal;
         wetL = mid + side;
         wetR = mid - side;
 
-        // Dry/Wet Curve Mixing
-        float dryGain = 1.0f;
-        float wetGain = 0.0f;
-        switch (dwCurve)
+        // Dry / Wet Mix Curve
+        float dryGain = 1.0f - mixVal;
+        float wetGain = mixVal;
+        if (mixCurve == 0) // EQUAL POWER
         {
-            case breach::DryWetCurveType::Linear:
-                dryGain = 1.0f - modDepth;
-                wetGain = modDepth;
-                break;
-            case breach::DryWetCurveType::SCurve:
-            {
-                const float s = modDepth * modDepth * (3.0f - 2.0f * modDepth);
-                dryGain = std::cos(s * juce::MathConstants<float>::halfPi);
-                wetGain = std::sin(s * juce::MathConstants<float>::halfPi);
-                break;
-            }
-            case breach::DryWetCurveType::EqualPower:
-            default:
-                dryGain = std::cos(modDepth * juce::MathConstants<float>::halfPi);
-                wetGain = std::sin(modDepth * juce::MathConstants<float>::halfPi);
-                break;
+            const float angle = mixVal * juce::MathConstants<float>::halfPi;
+            dryGain = std::cos(angle);
+            wetGain = std::sin(angle);
+        }
+        else if (mixCurve == 2) // S-CURVE
+        {
+            const float s = mixVal * mixVal * (3.0f - 2.0f * mixVal);
+            dryGain = 1.0f - s;
+            wetGain = s;
         }
 
-        float outL = (dryL * dryGain + wetL * wetGain) * outGain;
-        float outR = (dryR * dryGain + wetR * wetGain) * outGain;
+        float outL = (dryL * dryGain + wetL * wetGain) * outGainLin;
+        float outR = (dryR * dryGain + wetR * wetGain) * outGainLin;
 
-        // Global Soft Limiter with configurable threshold
-        if (limiterEnabled && limiterThreshLin > 1.0e-4f)
+        if (limiterOn)
         {
-            outL = breach::dsp::fastTanh(outL / limiterThreshLin) * limiterThreshLin;
-            outR = breach::dsp::fastTanh(outR / limiterThreshLin) * limiterThreshLin;
+            outL = std::tanh(outL);
+            outR = std::tanh(outR);
         }
 
-        leftData[n]  = outL;
-        rightData[n] = outR;
+        chL[i] = outL;
+        if (numChannels > 1)
+            chR[i] = outR;
+
+        const float monoOut = 0.5f * (outL + outR);
+        sumOutSq += monoOut * monoOut;
     }
 
-    // Publish Telemetry Snapshot
+    // Publish lock-free UI telemetry
     const float invN = 1.0f / static_cast<float>(numSamples);
-    telemetry.inputRmsL.store(std::sqrt(sumSqL * invN), std::memory_order_relaxed);
-    telemetry.inputRmsR.store(std::sqrt(sumSqR * invN), std::memory_order_relaxed);
-    telemetry.inputPeak.store(blockPeak, std::memory_order_relaxed);
-    telemetry.activeVoiceCount.store(lastActiveVoiceCount, std::memory_order_relaxed);
-    telemetry.activeMode.store(activeMode, std::memory_order_relaxed);
-    telemetry.activeArpStep.store(currentLitVoice, std::memory_order_relaxed);
-    telemetry.midiModeActive.store(midiMode, std::memory_order_relaxed);
-    telemetry.activePitchClassMask.store(lastActiveMask, std::memory_order_relaxed);
+    telemetry.inputRms.store(std::sqrt(sumInSq * invN), std::memory_order_relaxed);
+    telemetry.outputRms.store(std::sqrt(sumOutSq * invN), std::memory_order_relaxed);
+    telemetry.transientImpulse.store(transientHold, std::memory_order_relaxed);
+    telemetry.activeArpVoice.store(arpStep, std::memory_order_relaxed);
+    telemetry.lfo1Value.store(evaluateLfo(lfo1Shape, lfo1Phase + lfo1PhaseOff), std::memory_order_relaxed);
+    telemetry.lfo2Value.store(evaluateLfo(lfo2Shape, lfo2Phase + lfo2PhaseOff), std::memory_order_relaxed);
+    telemetry.envValue.store(juce::jlimit(0.0f, 1.0f, modEnvState * 4.0f), std::memory_order_relaxed);
 
-    for (int v = 0; v < breach::kMaxVoices; ++v)
-    {
-        const float energy = (modeCrossfadeSamplesRemaining > 0)
-            ? std::max(bankPrimary.getVoiceEnergy(v), bankSecondary.getVoiceEnergy(v))
-            : bankPrimary.getVoiceEnergy(v);
-
-        telemetry.voiceEnergies[static_cast<size_t>(v)].store(energy, std::memory_order_relaxed);
-        telemetry.voiceFrequencies[static_cast<size_t>(v)].store(
-            currentVoiceSpecs[static_cast<size_t>(v)].frequencyHz, std::memory_order_relaxed);
-    }
-}
-
-juce::AudioProcessorEditor* BreachResonatorAudioProcessor::createEditor()
-{
-    return new BreachResonatorAudioProcessorEditor(*this);
+    for (int v = 0; v < kMaxVoices; ++v)
+        telemetry.voiceEnergies[static_cast<size_t>(v)].store(voicesL[static_cast<size_t>(v)].energyMetric, std::memory_order_relaxed);
 }
 
 void BreachResonatorAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
-    state.setProperty("advancedPanelOpen", advancedPanelOpen.load(std::memory_order_relaxed), nullptr);
-    state.setProperty("advancedActiveTab", advancedActiveTab.load(std::memory_order_relaxed), nullptr);
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     copyXmlToBinary(*xml, destData);
 }
@@ -821,12 +915,12 @@ void BreachResonatorAudioProcessor::setStateInformation(const void* data, int si
 {
     std::unique_ptr<juce::XmlElement> xmlState(getXmlFromBinary(data, sizeInBytes));
     if (xmlState != nullptr && xmlState->hasTagName(apvts.state.getType()))
-    {
-        auto tree = juce::ValueTree::fromXml(*xmlState);
-        advancedPanelOpen.store(static_cast<bool>(tree.getProperty("advancedPanelOpen", false)), std::memory_order_relaxed);
-        advancedActiveTab.store(static_cast<int>(tree.getProperty("advancedActiveTab", 0)), std::memory_order_relaxed);
-        apvts.replaceState(tree);
-    }
+        apvts.replaceState(juce::ValueTree::fromXml(*xmlState));
+}
+
+juce::AudioProcessorEditor* BreachResonatorAudioProcessor::createEditor()
+{
+    return new BreachResonatorAudioProcessorEditor(*this);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
