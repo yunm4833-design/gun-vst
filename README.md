@@ -46,7 +46,7 @@ Stereo Input ─► Input Gain ─► [Transient Detector & Envelope Follower]
 
 ### Pre-built Binaries (GitHub Actions)
 1. Go to the [**Actions**](https://github.com/yunm4833-design/gun-vst/actions) tab of this repository.
-2. Select the latest completed workflow run (`Build BREACH Resonator VST3 & AU`).
+2. Select the latest completed workflow run (`1.1.1`).
 3. Download the artifact for your OS under **Artifacts**:
    - `BreachResonator-macOS-VST3-AU` (Universal `arm64` + `x86_64` `.vst3` & `.component`)
    - `BreachResonator-Windows-VST3` (Windows x64 `.vst3`)
