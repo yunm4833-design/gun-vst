@@ -94,7 +94,7 @@ void MangaSplitViewport::paint(juce::Graphics& g)
     // Right-hand manga screentone meter strip (12% width)
     const float stripW = juce::jmax(34.0f, bounds.getWidth() * 0.12f);
     const auto mainArea = bounds.withTrimmedRight(stripW);
-    const auto meterArea = bounds.removeFromRight(stripW);
+    const auto meterArea = bounds.withLeft(bounds.getRight() - stripW);
 
     // Draw halftone dots in meter strip
     g.setColour(ink.withAlpha(0.75f));
@@ -332,9 +332,10 @@ void GunSelectorStrip::paint(juce::Graphics& g)
         drawGunIcon(g, i, cell.withWidth(cell.getWidth() * 0.52f).reduced(6.0f, 10.0f), fg);
 
         g.setColour(fg);
-        const auto textRect = cell.withTrimmedLeft(cell.getWidth() * 0.48f).reduced(2.0f, 12.0f);
+        auto textRect = cell.withTrimmedLeft(cell.getWidth() * 0.48f).reduced(2.0f, 12.0f);
         g.setFont(laf.getMangaFont(11.5f, true));
-        g.drawText(kTitles[i], textRect.removeFromTop(textRect.getHeight() * 0.5f), juce::Justification::centredLeft, false);
+        const auto titleRect = textRect.removeFromTop(textRect.getHeight() * 0.5f);
+        g.drawText(kTitles[i], titleRect, juce::Justification::centredLeft, false);
         g.setFont(laf.getMangaFont(10.0f, true));
         g.drawText(kSubtitles[i], textRect, juce::Justification::centredLeft, false);
 
