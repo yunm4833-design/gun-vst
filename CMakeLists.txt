@@ -1,10 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
-project(BreachResonator VERSION 1.0.0)
+project(BreachResonator VERSION 2.0.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Optional: pass -DVST2_SDK_PATH=/path/to/vstsdk2.4 if you also want legacy VST2 (.dll / .vst)
 set(PLUGIN_FORMATS AU VST3 Standalone)
 if(DEFINED VST2_SDK_PATH AND EXISTS "${VST2_SDK_PATH}")
     list(APPEND PLUGIN_FORMATS VST)

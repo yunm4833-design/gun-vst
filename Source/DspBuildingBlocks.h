@@ -40,7 +40,7 @@ public:
     void setParameters(float cutoffHz, float q) noexcept
     {
         const float clampedFreq = juce::jlimit(20.0f, static_cast<float>(fs * 0.45), cutoffHz);
-        const float clampedQ = juce::jlimit(0.5f, 180.0f, q);
+        const float clampedQ = juce::jlimit(0.4f, 220.0f, q);
         g = std::tan(juce::MathConstants<float>::pi * clampedFreq / static_cast<float>(fs));
         k = 1.0f / clampedQ;
         a1 = 1.0f / (1.0f + g * (g + k));
@@ -84,6 +84,46 @@ private:
     float ic1eq = 0.0f, ic2eq = 0.0f;
 };
 
+class SpectralTiltFilter
+{
+public:
+    void prepare(double sampleRate) noexcept
+    {
+        fs = std::max(8000.0, sampleRate);
+        const float pivotHz = 1000.0f;
+        const float omega = kTwoPi * pivotHz / static_cast<float>(fs);
+        coeff = std::exp(-omega);
+        reset();
+    }
+
+    void reset() noexcept
+    {
+        lpState = 0.0f;
+    }
+
+    inline float process(float input, float tiltAmount) noexcept
+    {
+        if (std::abs(tiltAmount) < 1.0e-4f)
+            return input;
+
+        lpState = flushDenormal(coeff * lpState + (1.0f - coeff) * input);
+        const float lowBand = lpState;
+        const float highBand = input - lowBand;
+
+        const float tiltGain = juce::jlimit(-1.0f, 1.0f, tiltAmount) * 0.65f;
+        const float lowGain  = std::pow(10.0f, -tiltGain * 0.30f);
+        const float highGain = std::pow(10.0f,  tiltGain * 0.30f);
+
+        return lowBand * lowGain + highBand * highGain;
+    }
+
+private:
+    double fs = 44100.0;
+    float coeff = 0.85f;
+    float lpState = 0.0f;
+};
+
+// Fractional Comb Filter with Stiffness Dispersion Allpass (metallic string dispersion)
 class FractionalCombFilter
 {
 public:
@@ -105,9 +145,11 @@ public:
         std::fill(buffer.begin(), buffer.end(), 0.0f);
         writeIdx = 0;
         dampState = 0.0f;
+        dispState1 = 0.0f;
+        dispState2 = 0.0f;
     }
 
-    inline float process(float input, float freqHz, float decay, float damping) noexcept
+    inline float process(float input, float freqHz, float decay, float damping, float stiffness) noexcept
     {
         if (buffer.empty())
             return input;
@@ -131,7 +173,19 @@ public:
         const float c1  = -(frac + 1.0f) * frac * (frac - 2.0f) / 2.0f;
         const float c2  =  (frac + 1.0f) * frac * (frac - 1.0f) / 6.0f;
 
-        const float delayed = c_1 * y_1 + c0 * y0 + c1 * y1 + c2 * y2;
+        float delayed = c_1 * y_1 + c0 * y0 + c1 * y1 + c2 * y2;
+
+        // Stiffness dispersion allpass stages stretch upper harmonic partials (metallic bar/wire)
+        if (stiffness > 0.001f)
+        {
+            const float a = juce::jlimit(0.0f, 0.72f, stiffness * 0.68f);
+            const float ap1 = -a * delayed + dispState1;
+            dispState1 = flushDenormal(delayed + a * ap1);
+            const float ap2 = -a * ap1 + dispState2;
+            dispState2 = flushDenormal(ap1 + a * ap2);
+            delayed = ap2;
+        }
+
         dampState = flushDenormal(dampState + dampCoeff * (delayed - dampState));
 
         const float feedback = juce::jlimit(0.0f, 0.994f, 0.72f + 0.274f * std::pow(decay, 0.45f));
@@ -150,6 +204,8 @@ private:
     int mask = 0;
     int writeIdx = 0;
     float dampState = 0.0f;
+    float dispState1 = 0.0f;
+    float dispState2 = 0.0f;
 };
 
 class AllpassDiffuser
@@ -278,38 +334,48 @@ private:
     double phase = 0.0;
 };
 
-class ModulationLfo
+class MotionLfoBank
 {
 public:
     void prepare(double sampleRate) noexcept
     {
         fs = std::max(8000.0, sampleRate);
         phase = 0.0f;
-        shValue = 0.0f;
+        shValues.fill(0.0f);
     }
 
-    inline float process(float rateHz, LfoShape shape) noexcept
+    void advance(float rateHz) noexcept
     {
         const float inc = juce::jlimit(0.01f, 50.0f, rateHz) / static_cast<float>(fs);
         phase += inc;
         if (phase >= 1.0f)
         {
             phase -= 1.0f;
-            shValue = rng.nextFloat() * 2.0f - 1.0f;
+            for (auto& val : shValues)
+                val = rng.nextFloat() * 2.0f - 1.0f;
         }
+    }
+
+    inline float getVoiceValue(int voiceIndex, int totalVoices, MotionShape shape, float phaseOffsetNorm = 0.0f) const noexcept
+    {
+        const float voiceSpread = (totalVoices > 1)
+            ? (static_cast<float>(voiceIndex) / static_cast<float>(totalVoices)) * 0.65f
+            : 0.0f;
+        float p = phase + voiceSpread + phaseOffsetNorm;
+        p -= std::floor(p);
 
         switch (shape)
         {
-            case LfoShape::Sine:
-                return std::sin(kTwoPi * phase);
-            case LfoShape::Triangle:
-                return 1.0f - 4.0f * std::abs(std::round(phase - 0.25f) - (phase - 0.25f));
-            case LfoShape::Saw:
-                return 2.0f * phase - 1.0f;
-            case LfoShape::Square:
-                return (phase < 0.5f) ? 1.0f : -1.0f;
-            case LfoShape::SampleAndHold:
-                return shValue;
+            case MotionShape::Sine:
+                return std::sin(kTwoPi * p);
+            case MotionShape::Triangle:
+                return 1.0f - 4.0f * std::abs(std::round(p - 0.25f) - (p - 0.25f));
+            case MotionShape::Square:
+                return (p < 0.5f) ? 1.0f : -1.0f;
+            case MotionShape::Random:
+                return shValues[static_cast<size_t>(voiceIndex % 12)];
+            case MotionShape::Saw:
+                return 2.0f * p - 1.0f;
             default:
                 return 0.0f;
         }
@@ -318,7 +384,7 @@ public:
 private:
     double fs = 44100.0;
     float phase = 0.0f;
-    float shValue = 0.0f;
+    std::array<float, 12> shValues{};
     juce::Random rng{ 0x51A7E };
 };
 

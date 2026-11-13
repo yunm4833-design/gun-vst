@@ -1,4 +1,5 @@
 #pragma once
+#include "PluginParameters.h"
 #include <atomic>
 #include <array>
 #include <cstdint>
@@ -7,7 +8,7 @@ namespace breach
 {
 struct VisualTelemetry
 {
-    static constexpr int kMaxVoices = 8;
+    static constexpr int kMaxVoices = breach::kMaxVoices;
 
     std::atomic<float> inputRmsL{ 0.0f };
     std::atomic<float> inputRmsR{ 0.0f };
@@ -17,17 +18,18 @@ struct VisualTelemetry
     std::array<std::atomic<float>, kMaxVoices> voiceEnergies{};
     std::array<std::atomic<float>, kMaxVoices> voiceFrequencies{};
 
-    std::atomic<int> activeVoiceCount{ 6 };
+    std::atomic<int> activeVoiceCount{ 8 };
     std::atomic<int> activeMode{ 0 };
     std::atomic<int> activeArpStep{ -1 };
-    std::atomic<bool> midiOverrideActive{ false };
+    std::atomic<bool> midiModeActive{ false };
+    std::atomic<uint16_t> activePitchClassMask{ 0 };
 
     VisualTelemetry()
     {
-        for (int i = 0; i < kMaxVoices; ++i)
+        for (size_t i = 0; i < kMaxVoices; ++i)
         {
-            voiceEnergies[static_cast<size_t>(i)].store(0.0f, std::memory_order_relaxed);
-            voiceFrequencies[static_cast<size_t>(i)].store(440.0f, std::memory_order_relaxed);
+            voiceEnergies[i].store(0.0f, std::memory_order_relaxed);
+            voiceFrequencies[i].store(440.0f, std::memory_order_relaxed);
         }
     }
 
@@ -39,10 +41,11 @@ struct VisualTelemetry
         uint32_t transientPulseCount = 0;
         std::array<float, kMaxVoices> voiceEnergies{};
         std::array<float, kMaxVoices> voiceFrequencies{};
-        int activeVoiceCount = 6;
+        int activeVoiceCount = 8;
         int activeMode = 0;
         int activeArpStep = -1;
-        bool midiOverrideActive = false;
+        bool midiModeActive = false;
+        uint16_t activePitchClassMask = 0;
     };
 
     Snapshot getSnapshot() const noexcept
@@ -55,12 +58,13 @@ struct VisualTelemetry
         s.activeVoiceCount = activeVoiceCount.load(std::memory_order_relaxed);
         s.activeMode = activeMode.load(std::memory_order_relaxed);
         s.activeArpStep = activeArpStep.load(std::memory_order_relaxed);
-        s.midiOverrideActive = midiOverrideActive.load(std::memory_order_relaxed);
+        s.midiModeActive = midiModeActive.load(std::memory_order_relaxed);
+        s.activePitchClassMask = activePitchClassMask.load(std::memory_order_relaxed);
 
-        for (int i = 0; i < kMaxVoices; ++i)
+        for (size_t i = 0; i < kMaxVoices; ++i)
         {
-            s.voiceEnergies[static_cast<size_t>(i)] = voiceEnergies[static_cast<size_t>(i)].load(std::memory_order_relaxed);
-            s.voiceFrequencies[static_cast<size_t>(i)] = voiceFrequencies[static_cast<size_t>(i)].load(std::memory_order_relaxed);
+            s.voiceEnergies[i] = voiceEnergies[i].load(std::memory_order_relaxed);
+            s.voiceFrequencies[i] = voiceFrequencies[i].load(std::memory_order_relaxed);
         }
         return s;
     }
