@@ -1,6 +1,6 @@
 **English** | [简体中文](./README_CN.md)
 
-# BREACH // 貫通 — Polyphonic Chord Resonator (v2.0.0)
+# BREACH // 貫通 — Polyphonic Chord Resonator (v1.1.0)
 
 **BREACH // 貫通** is a stereo polyphonic chord resonator audio effect plugin built with **JUCE 8.0.4 (C++17)**, supporting **VST3**, **AU**, and **Standalone** formats. Designed around a high-contrast Japanese manga split-panel aesthetic, it transforms incoming transients, drums, synths, and guitars into pitched harmonic chords, metallic waveguides, and kinetic textures.
 
