@@ -1,5 +1,6 @@
 **English** | [简体中文](./README_CN.md)
 
+<img width="860" height="740" alt="37148b001138f9555ed1a2acee6bce59" src="https://github.com/user-attachments/assets/d6482ebd-4ff8-44af-9e2b-defb99d85168" />
 
 # BREACH // 貫通 — Polyphonic Chord Resonator (v1.1.1)
 
