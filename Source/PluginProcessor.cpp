@@ -289,7 +289,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout BreachResonatorAudioProcesso
 
     // Output EQ parameters are appended after all previous host parameters.
     // AUv2 orders parameters by version hint, then by identifier hash.
-    constexpr int outputEqVersion = 2;
+    static constexpr int outputEqVersion = 2;
     params.push_back(std::make_unique<juce::AudioParameterBool>(juce::ParameterID("outputEqEnable", outputEqVersion), "Output EQ Enable", false));
     juce::StringArray filterTypes;
     for (const auto* name : breach::eq::shapeNames) filterTypes.add(name);

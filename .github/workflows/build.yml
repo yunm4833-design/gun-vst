@@ -4,6 +4,11 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Version of an existing draft release to receive the packages
+        required: false
+        type: string
 
 jobs:
   build-macos:
@@ -24,6 +29,10 @@ jobs:
           ditto "$root/AU/BREACH Resonator.component" "$package/BREACH Resonator.component"
           ditto "$root/Standalone/BREACH Resonator.app" "$package/BREACH Resonator.app"
           ditto Licenses "$package/Licenses"
+          for bundle in "$package"/*.vst3 "$package"/*.component "$package"/*.app; do
+            executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist")
+            lipo "$bundle/Contents/MacOS/$executable" -verify_arch arm64 x86_64
+          done
           ditto -c -k --sequesterRsrc "$package" dist/BreachResonator-macOS-Universal.zip
       - uses: actions/upload-artifact@v4
         with:
@@ -54,3 +63,43 @@ jobs:
           name: BreachResonator-Windows-x64
           path: dist/BreachResonator-Windows-x64.zip
           if-no-files-found: error
+
+  attach-release-assets:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: BreachResonator-*
+          path: release
+          merge-multiple: true
+      - name: Attach packages and documentation to the draft
+        shell: bash
+        run: |
+          version=$(awk '/^project[(]BreachResonator VERSION / {print $3}' CMakeLists.txt)
+          if [[ "$RELEASE_TAG" != "$version" ]]; then
+            echo "::error::The draft tag must match the CMake project version."
+            exit 1
+          fi
+          draft=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish --jq '[.isDraft,.targetCommitish] | @tsv')
+          if [[ "$draft" != $'true\t'"$GITHUB_SHA" ]]; then
+            echo "::error::The draft release must point to this commit."
+            exit 1
+          fi
+          mac_package="release/BREACH-Resonator-$version-macOS-Universal.zip"
+          windows_package="release/BREACH-Resonator-$version-Windows-x64.zip"
+          mv release/BreachResonator-macOS-Universal.zip "$mac_package"
+          mv release/BreachResonator-Windows-x64.zip "$windows_package"
+          unzip -tq "$mac_package"
+          unzip -tq "$windows_package"
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$mac_package" "$windows_package" Docs/BREACH-Resonator-Preview.png \
+            "Docs/BREACH-Resonator-$version-User-Manual-EN.pdf" \
+            "Docs/BREACH-Resonator-$version-User-Manual-ZH-CN.pdf"
