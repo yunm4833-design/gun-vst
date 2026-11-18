@@ -3,36 +3,11 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "PluginProcessor.h"
 #include "MangaLookAndFeel.h"
+#include "MangaControls.h"
+#include "OutputEqPanel.h"
+#include "VoicePanels.h"
+#include "ImpactPanel.h"
 #include <array>
-#include <vector>
-
-class MangaSplitViewport : public juce::Component
-{
-public:
-    MangaSplitViewport(BreachResonatorAudioProcessor& p, MangaLookAndFeel& l);
-
-    void paint(juce::Graphics& g) override;
-    void tickAnimation();
-
-private:
-    struct DebrisParticle
-    {
-        float x = 0.0f, y = 0.0f;
-        float vx = 0.0f, vy = 0.0f;
-        float size = 3.0f;
-        float life = 0.0f;
-    };
-
-    BreachResonatorAudioProcessor& processor;
-    MangaLookAndFeel& laf;
-
-    float recoilOffset = 0.0f;
-    float recoilVel = 0.0f;
-    float flashAlpha = 0.0f;
-    float lastTransient = 0.0f;
-    int   sfxIndex = 0;
-    std::vector<DebrisParticle> particles;
-};
 
 class GunSelectorStrip : public juce::Component
 {
@@ -43,10 +18,14 @@ public:
     void mouseDown(const juce::MouseEvent& e) override;
 
 private:
-    void drawGunIcon(juce::Graphics& g, int index, juce::Rectangle<float> area, juce::Colour strokeCol);
+    void drawGunIcon(juce::Graphics& g, int index, juce::Rectangle<float> area,
+                     juce::Colour foreground, juce::Colour background);
 
     BreachResonatorAudioProcessor& processor;
     MangaLookAndFeel& laf;
+    std::array<std::unique_ptr<juce::Drawable>, 5> icons;
+    std::array<std::unique_ptr<juce::Drawable>, 5> tintedIcons;
+    std::array<juce::Colour, 5> iconColours;
 };
 
 class BreachResonatorAudioProcessorEditor : public juce::AudioProcessorEditor,
@@ -61,7 +40,19 @@ public:
 
 private:
     void timerCallback() override;
+    class OttGainMeters : public juce::Component
+    {
+    public:
+        OttGainMeters(const VisualTelemetry& source, const MangaLookAndFeel& theme)
+            : telemetry(source), laf(theme) {}
+        void paint(juce::Graphics&) override;
+    private:
+        const VisualTelemetry& telemetry;
+        const MangaLookAndFeel& laf;
+    };
+
     void updateDrawerVisibility();
+    void refreshOttPanel();
     void configureRotaryKnob(juce::Slider& slider, juce::Label& label, const juce::String& text, bool showTextBox);
 
     BreachResonatorAudioProcessor& audioProcessor;
@@ -71,12 +62,20 @@ private:
     juce::TextButton prevPresetBtn { "<" };
     juce::ComboBox   chordPresetBox;
     juce::TextButton nextPresetBtn { ">" };
-    juce::TextButton panicBtn      { "PANIC" };
+    juce::TextButton panicBtn      { "TRIGGER" };
     juce::TextButton advancedBtn   { "ADVANCED" };
     juce::TextButton invertBtn     { "INVERT" };
 
     // Center Manga Split Viewport
     MangaSplitViewport viewport;
+    MangaKeyboard keyboard;
+    MangaSettingsBackdrop settingsBackdrop;
+    VoicePanel voicePanel;
+    ModRoutePanel modRoutePanel;
+    juce::TextButton panicResetBtn { "PANIC" };
+    juce::TextButton closeSettingsBtn { "CLOSE" };
+    juce::TooltipWindow tooltipWindow { this, 650 };
+    bool performanceSettings = false;
 
     // 6 Macro Knobs
     juce::Slider driveSlider, spaceSlider, decaySlider, toneSlider, densitySlider, mixSlider;
@@ -101,27 +100,22 @@ private:
     // 5 Gun Topology Strip
     GunSelectorStrip gunStrip;
 
-    // Advanced 4-Tab Drawer
+    // Advanced Drawer
     bool drawerExpanded = true;
-    int  activeDrawerTab = 1; // Default to Tab B // RESONATOR
+    int  activeDrawerTab = 0; // Reference opens the voice macros.
 
     juce::TextButton tabABtn { "A // VOICES" };
     juce::TextButton tabBBtn { "B // RESONATOR" };
     juce::TextButton tabCBtn { "C // MODULATION" };
     juce::TextButton tabDBtn { "D // GLOBAL" };
-
-    // Tab A // VOICES controls
-    struct VoiceRowControls
-    {
-        juce::Label  title;
-        juce::Slider level, pan, detune, decay;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> levelAtt, panAtt, detuneAtt, decayAtt;
-    };
-    std::array<VoiceRowControls, BreachResonatorAudioProcessor::kMaxVoices> voiceRows;
-    juce::Label tabAHeaderLabel;
+    juce::TextButton tabEBtn { "E // DYNAMICS" }, tabFBtn { "F // REVERB" }, tabGBtn { "G // EQ" };
+    OutputEqPanel eqPanel;
 
     // Tab B // RESONATOR controls
     juce::ComboBox resTopologyBox;
+    juce::TextButton smearRevisionBtn { "SMEAR: SHORT" };
+    juce::TextButton ringTimeBtn { "RING: NEW" };
+    juce::Label smearInfo;
     juce::Slider   attackSlider, fbDampSlider, stiffnessSlider, excHpfSlider, excDriveSlider;
     juce::Label    attackLabel, fbDampLabel, stiffnessLabel, excHpfLabel, excDriveLabel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> resTopoAtt;
@@ -140,19 +134,41 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>   lfo1RateAtt, lfo1PhaseAtt, shiftAtt, unisonAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>   lfo2RateAtt, lfo2PhaseAtt, envAttAtt, envRelAtt, envAmtAtt;
 
-    std::array<juce::Label, 3> matrixRowLabels;
-    std::array<juce::Label, 6> matrixColLabels;
-    std::array<juce::Slider, 18> matrixSliders;
-    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, 18> matrixAtts;
-
     // Tab D // GLOBAL controls
     juce::Slider     inGainSlider, outGainSlider, widthSlider, smoothSlider;
     juce::Label      inGainLbl, outGainLbl, widthLbl, mixCurveLbl, oversampleLbl, smoothLbl;
     juce::ComboBox   mixCurveBox, oversampleBox;
+    juce::TextButton balanceRevisionBtn { "LEVELS: BALANCED" };
+    juce::TextButton modalRevisionBtn { "MODAL: RINGS" };
+    juce::TextButton formantRevisionBtn { "FORMANT: STK" };
+    juce::TextButton stringRevisionBtn { "STRING: RINGS" };
+    juce::TextButton nonlinearRevisionBtn { "DRIVE DSP: NEW" };
+    juce::TextButton spatialRevisionBtn { "SPATIAL: NEW" };
     juce::TextButton limiterBtn { "LIMITER: ON" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>   inGainAtt, outGainAtt, widthAtt, smoothAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> mixCurveAtt, oversampleAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>   limiterAtt;
+
+    // Tab E // DYNAMICS and Tab F // REVERB
+    std::array<juce::Slider,8> ottSliders;
+    std::array<juce::Label,8> ottLabels;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>,8> ottAttachments;
+    juce::TextButton ottEnableBtn { "OTT: OFF" };
+    juce::TextButton ottSetupBtn { "SETUP >" };
+    juce::TextButton ottModelBtn { "MODEL: FAUST" };
+    juce::Label ottHeader;
+    OttGainMeters ottMeters;
+    bool ottSetupOpen = false;
+    bool ottFaustDisplayed = true;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> ottEnableAttachment;
+    std::array<juce::Slider,6> reverbSliders;
+    std::array<juce::Label,6> reverbLabels;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>,6> reverbAttachments;
+    juce::TextButton reverbEnableBtn { "REVERB: OFF" };
+    juce::ComboBox reverbTypeBox;
+    juce::Label reverbHeader,reverbInfo;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> reverbEnableAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> reverbTypeAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BreachResonatorAudioProcessorEditor)
 };

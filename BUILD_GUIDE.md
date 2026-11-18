@@ -1,25 +1,26 @@
-# BREACH // Chord Resonator — VST3 / AU Build Guide
+# BREACH // RESONATOR Build Guide
 
-## 1. Local Build (macOS / Windows)
-Ensure you have **CMake (>= 3.22)** and a C++17 compiler (**Xcode** on macOS, or **Visual Studio 2022** on Windows) installed. CMake will automatically fetch JUCE 8.0.4:
+Use CMake 3.22 or newer, a C++17 compiler, and an internet connection for the initial JUCE 8.0.4 FetchContent download. Use Xcode on macOS or Visual Studio with the Desktop development with C++ workload on Windows.
 
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --parallel
 ```
 
-- **Windows VST3 output**: `build/BreachResonator_artefacts/Release/VST3/BREACH Resonator.vst3`
-  - Copy into `C:\Program Files\Common Files\VST3\`
-- **macOS VST3 & AU output**:
-  - `build/BreachResonator_artefacts/Release/VST3/BREACH Resonator.vst3` -> `~/Library/Audio/Plug-Ins/VST3/`
-  - `build/BreachResonator_artefacts/Release/AU/BREACH Resonator.component` -> `~/Library/Audio/Plug-Ins/Components/`
+The project configures universal `arm64;x86_64` binaries on macOS. Under `build/BreachResonator_artefacts/Release/`, look in `VST3/` for `BREACH Resonator.vst3`, `AU/` for the macOS `.component`, and `Standalone/` for the app or EXE.
 
-## 2. Optional Legacy VST2 (`.dll` / `.vst`)
-Steinberg discontinued the VST2 SDK in 2018. If you own a copy of the legacy VST2 SDK, pass its path during configuration:
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DVST2_SDK_PATH=/path/to/vstsdk2.4
-cmake --build build --config Release --parallel
+The GitHub Actions workflow builds Windows and macOS packages on pushes to the default branch and by manual dispatch. Each platform artifact contains a ready-to-download ZIP. See [Releases](https://github.com/yunm4833-design/gun-vst/releases) for published versions and installation instructions.
+
+## Local checks
+
+```sh
+cmake -S . -B build-tests -DBREACH_BUILD_DSP_TESTS=ON -DBREACH_BUILD_UI_TESTS=ON
+cmake --build build-tests --config Release --parallel
+ctest --test-dir build-tests -C Release --output-on-failure
 ```
 
-## 3. Zero-Setup Cloud Build (GitHub Actions)
-Push this repository to GitHub and open the **Actions** tab to download pre-compiled Windows `.vst3` and macOS `.vst3` / `.component` binaries automatically.
+Run the built `BreachUiSmoke` executable with a screenshot output directory to check the editor and session recall. The executable is under `build-tests/` for single-config builds or under `build-tests/Release/` for multi-config builds.
+
+## Optional VST2
+
+If you already have the legacy Steinberg VST2 SDK, pass `-DVST2_SDK_PATH=/path/to/vst2sdk` at configuration time.

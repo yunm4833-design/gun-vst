@@ -2,6 +2,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <cmath>
+#include "BinaryData.h"
 
 class MangaLookAndFeel : public juce::LookAndFeel_V4
 {
@@ -77,8 +78,9 @@ public:
 
     juce::Font getMangaFont(float height, bool bold = true) const
     {
-        juce::FontOptions opts(height, bold ? juce::Font::bold : juce::Font::plain);
-        return juce::Font(opts);
+        juce::Font font(juce::FontOptions(typeface).withHeight(height * 1.2f));
+        if (bold) font = font.boldened();
+        return font;
     }
 
     void drawButtonBackground(juce::Graphics& g,
@@ -95,10 +97,10 @@ public:
             bg = getPanelTintColour();
 
         g.setColour(bg);
-        g.fillRect(bounds);
+        g.fillRoundedRectangle(bounds, 3.0f);
 
         g.setColour(getInkColour());
-        g.drawRect(bounds, 1.5f);
+        g.drawRoundedRectangle(bounds, 3.0f, 1.7f);
     }
 
     void drawButtonText(juce::Graphics& g,
@@ -113,11 +115,11 @@ public:
         const int w = button.getWidth();
         const int h = button.getHeight();
 
-        float fontSize = juce::jlimit(9.5f, 13.0f, static_cast<float>(h) * 0.48f);
+        float fontSize = juce::jlimit(12.0f, 25.0f, static_cast<float>(h) * 0.68f);
         if (w <= 34 && text.length() >= 2)
             fontSize = juce::jmin(fontSize, 10.5f);
 
-        g.setFont(getMangaFont(fontSize, true));
+        g.setFont(getMangaFont(fontSize, false));
         g.drawFittedText(text, 1, 0, juce::jmax(1, w - 2), h, juce::Justification::centred, 1, 0.72f);
     }
 
@@ -152,8 +154,8 @@ public:
     void positionComboBoxText(juce::ComboBox& box, juce::Label& label) override
     {
         label.setBounds(4, 1, juce::jmax(1, box.getWidth() - 18), juce::jmax(1, box.getHeight() - 2));
-        const float fontSize = juce::jlimit(9.5f, 12.0f, static_cast<float>(box.getHeight()) * 0.46f);
-        label.setFont(getMangaFont(fontSize, true));
+        const float fontSize = juce::jlimit(12.0f, 23.0f, static_cast<float>(box.getHeight()) * 0.67f);
+        label.setFont(getMangaFont(fontSize, false));
         label.setColour(juce::Label::textColourId, getInkColour());
         label.setJustificationType(juce::Justification::centredLeft);
     }
@@ -168,7 +170,9 @@ public:
                           float rotaryEndAngle,
                           juce::Slider& /*slider*/) override
     {
-        const float radius = juce::jmin(static_cast<float>(width), static_cast<float>(height)) * 0.5f - 5.0f;
+        const float diameter = static_cast<float>(juce::jmin(width, height));
+        const float radius = diameter * 0.5f - juce::jmin(13.0f, diameter * 0.16f);
+        const float ornamentScale = juce::jmin(1.0f, radius / 25.0f);
         if (radius <= 4.0f)
             return;
 
@@ -183,28 +187,32 @@ public:
         g.fillEllipse(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f);
 
         g.setColour(ink);
-        constexpr int numTicks = 13;
+        constexpr int numTicks = 31;
         for (int i = 0; i < numTicks; ++i)
         {
             const float frac = static_cast<float>(i) / static_cast<float>(numTicks - 1);
             const float a = rotaryStartAngle + frac * (rotaryEndAngle - rotaryStartAngle);
             const float sinA = std::sin(a);
             const float cosA = -std::cos(a);
-            const float rInner = radius + 0.5f;
-            const float rOuter = radius + ((i == 0 || i == 6 || i == 12) ? 4.2f : 2.6f);
+            const float rInner = radius + 7.0f * ornamentScale;
+            const float rOuter = radius + (i % 3 == 0 ? 13.0f : 10.0f) * ornamentScale;
             g.drawLine(cx + sinA * rInner, cy + cosA * rInner,
                        cx + sinA * rOuter, cy + cosA * rOuter, 1.3f);
         }
 
         g.drawEllipse(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f, 1.8f);
-        const float innerR = radius * 0.80f;
+        const float innerR = radius - 3.5f * ornamentScale;
         g.drawEllipse(cx - innerR, cy - innerR, innerR * 2.0f, innerR * 2.0f, 0.9f);
 
         const float sinP = std::sin(angle);
         const float cosP = -std::cos(angle);
-        g.drawLine(cx, cy, cx + sinP * (radius * 0.84f), cy + cosP * (radius * 0.84f), 2.1f);
-
-        g.fillEllipse(cx - 2.4f, cy - 2.4f, 4.8f, 4.8f);
+        g.drawLine(cx, cy, cx + sinP * (radius - 5.0f * ornamentScale), cy + cosP * (radius - 5.0f * ornamentScale), 3.5f * ornamentScale);
+        for (int i = 0; i < 120; ++i)
+        {
+            const float a = static_cast<float>(i) * juce::MathConstants<float>::twoPi / 120.0f;
+            g.drawLine(cx + std::sin(a) * (radius + 1.5f * ornamentScale), cy + std::cos(a) * (radius + 1.5f * ornamentScale),
+                       cx + std::sin(a) * (radius + 3.5f * ornamentScale), cy + std::cos(a) * (radius + 3.5f * ornamentScale), 0.55f);
+        }
     }
 
     void drawLinearSlider(juce::Graphics& g,
@@ -220,6 +228,19 @@ public:
     {
         const auto ink = getInkColour();
         const auto paper = getPaperColour();
+        if (static_cast<bool>(slider.getProperties()["screentone"]))
+        {
+            auto track = juce::Rectangle<float>(static_cast<float>(x), static_cast<float>(y + height / 2 - 9), static_cast<float>(width), 18.0f);
+            g.setColour(paper); g.fillRoundedRectangle(track, 2.0f);
+            g.setColour(ink);
+            for (float yy = track.getY() + 2; yy < track.getBottom() - 1; yy += 3)
+                for (float xx = track.getX() + 2; xx < track.getRight() - 1; xx += 3)
+                    g.fillEllipse(xx, yy, 1.0f, 1.0f);
+            g.drawRoundedRectangle(track, 2.0f, 1.4f);
+            const float pos = juce::jlimit(track.getX() + 2, track.getRight() - 2, sliderPos);
+            g.fillRect(pos - 1.5f, track.getY(), 3.0f, track.getHeight());
+            return;
+        }
 
         const float cy = static_cast<float>(y) + static_cast<float>(height) * 0.5f;
         const float left = static_cast<float>(x) + 4.0f;
@@ -304,5 +325,6 @@ public:
     }
 
 private:
+    juce::Typeface::Ptr typeface = juce::Typeface::createSystemTypefaceFor(BinaryData::BarlowCondensedRegular_ttf, BinaryData::BarlowCondensedRegular_ttfSize);
     bool inverted = false;
 };

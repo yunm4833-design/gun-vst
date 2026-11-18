@@ -10,28 +10,47 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Configure CMake (Universal macOS VST3 + AU)
+      - name: Configure CMake (Universal macOS)
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
       - name: Build
         run: cmake --build build --config Release --parallel
-      - name: Upload macOS VST3 & AU Artifacts
-        uses: actions/upload-artifact@v4
+      - name: Package macOS VST3, AU and Standalone
+        shell: bash
+        run: |
+          root=build/BreachResonator_artefacts/Release
+          package=build/package-macos
+          mkdir -p "$package" dist
+          ditto "$root/VST3/BREACH Resonator.vst3" "$package/BREACH Resonator.vst3"
+          ditto "$root/AU/BREACH Resonator.component" "$package/BREACH Resonator.component"
+          ditto "$root/Standalone/BREACH Resonator.app" "$package/BREACH Resonator.app"
+          ditto Licenses "$package/Licenses"
+          ditto -c -k --sequesterRsrc "$package" dist/BreachResonator-macOS-Universal.zip
+      - uses: actions/upload-artifact@v4
         with:
-          name: BreachResonator-macOS-VST3-AU
-          path: |
-            build/BreachResonator_artefacts/Release/VST3/*.vst3
-            build/BreachResonator_artefacts/Release/AU/*.component
+          name: BreachResonator-macOS-Universal
+          path: dist/BreachResonator-macOS-Universal.zip
+          if-no-files-found: error
 
   build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Configure CMake (Windows x64 VST3)
+      - name: Configure CMake (Windows x64)
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build --config Release --parallel
-      - name: Upload Windows VST3 Artifact
-        uses: actions/upload-artifact@v4
+      - name: Package Windows VST3 and Standalone
+        shell: pwsh
+        run: |
+          $root = 'build/BreachResonator_artefacts/Release'
+          $package = 'build/package-windows'
+          New-Item -ItemType Directory -Force $package, dist | Out-Null
+          Copy-Item "$root/VST3/BREACH Resonator.vst3" $package -Recurse
+          Copy-Item "$root/Standalone/BREACH Resonator.exe" $package
+          Copy-Item Licenses $package -Recurse
+          Compress-Archive -Path "$package/*" -DestinationPath dist/BreachResonator-Windows-x64.zip -Force
+      - uses: actions/upload-artifact@v4
         with:
-          name: BreachResonator-Windows-VST3
-          path: build/BreachResonator_artefacts/Release/VST3/*.vst3
+          name: BreachResonator-Windows-x64
+          path: dist/BreachResonator-Windows-x64.zip
+          if-no-files-found: error

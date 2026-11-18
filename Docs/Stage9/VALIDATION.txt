@@ -1,0 +1,122 @@
+BREACH Stage 9 verification
+
+Linux x86_64 Debug, JUCE 8.0.4, C++17. VST3 and Standalone built.
+19/19 CTest and UI smoke checks passed. The six stage 8 legacy session fixtures
+replayed sample-exact, including preservation of the original decay mapping.
+Existing parameter definitions and order match the pre-edit source. The two new
+macro IDs use version hint 3. Source, comments and UI use ASCII.
+Both new macro controls have neutral defaults and preserve the voice offsets.
+UI tests check V12 edits, unchanged voice parameters after adjusting macros,
+route add, reselect, edit and clear, and switching the decay revision.
+
+Measured tails use C3 single-note 20 ms excitation at 48 kHz and 1x/4x. The
+limiter, OTT and reverb are bypassed. T20 is extrapolated to 60 dB, and the peak
+is measured within the first 30 ms. The results describe this test signal only.
+The 2x trim test uses 1x oversampling. Automation is checked at 64/512 samples.
+Windows/macOS binaries and actual DAW loading have not been verified.
+GitHub was not updated.
+
+JUCE v8.0.4
+1x PISTOL 0.2 target 0.0570714 s, measured 0.0570625 s, onset -24.1224 dBFS
+1x PISTOL 0.5 target 0.19685 s, measured 0.1965 s, onset -23.9075 dBFS
+1x PISTOL 0.8 target 0.678974 s, measured 0.67775 s, onset -23.2002 dBFS
+PISTOL onset span 0.922257 dB
+1x SHOTGUN 0.2 target 0.138974 s, measured 0.138875 s, onset -32.2077 dBFS
+1x SHOTGUN 0.5 target 0.489898 s, measured 0.491187 s, onset -30.8351 dBFS
+1x SHOTGUN 0.8 target 1.72694 s, measured 1.72775 s, onset -30.2045 dBFS
+SHOTGUN onset span 2.00319 dB
+1x SMG 0.2 target 0.0563152 s, measured 0.05675 s, onset -23.1835 dBFS
+1x SMG 0.5 target 0.190394 s, measured 0.192563 s, onset -23.2667 dBFS
+1x SMG 0.8 target 0.643698 s, measured 0.642937 s, onset -22.7344 dBFS
+SMG onset span 0.532387 dB
+1x SNIPER 0.2 target 0.0569146 s, measured 0.0570625 s, onset -19.0244 dBFS
+1x SNIPER 0.5 target 0.207846 s, measured 0.208062 s, onset -18.2811 dBFS
+1x SNIPER 0.8 target 0.759032 s, measured 0.758812 s, onset -17.9399 dBFS
+SNIPER onset span 1.08448 dB
+1x REVOLVER 0.2 target 0.155609 s, measured 0.15775 s, onset -28.4048 dBFS
+1x REVOLVER 0.5 target 0.515752 s, measured 0.515813 s, onset -27.4261 dBFS
+1x REVOLVER 0.8 target 1.70941 s, measured 1.709 s, onset -27.065 dBFS
+REVOLVER onset span 1.33988 dB
+4x PISTOL 0.2 target 0.0570714 s, measured 0.057 s, onset -24.1068 dBFS
+4x PISTOL 0.5 target 0.19685 s, measured 0.196188 s, onset -23.8931 dBFS
+4x PISTOL 0.8 target 0.678974 s, measured 0.677813 s, onset -23.1852 dBFS
+PISTOL onset span 0.92158 dB
+4x SHOTGUN 0.2 target 0.138974 s, measured 0.138563 s, onset -32.1668 dBFS
+4x SHOTGUN 0.5 target 0.489898 s, measured 0.491 s, onset -30.7921 dBFS
+4x SHOTGUN 0.8 target 1.72694 s, measured 1.72438 s, onset -30.1668 dBFS
+SHOTGUN onset span 2 dB
+4x SMG 0.2 target 0.0563152 s, measured 0.0568125 s, onset -23.1695 dBFS
+4x SMG 0.5 target 0.190394 s, measured 0.192563 s, onset -23.25 dBFS
+4x SMG 0.8 target 0.643698 s, measured 0.642938 s, onset -22.7277 dBFS
+SMG onset span 0.522308 dB
+4x SNIPER 0.2 target 0.0569146 s, measured 0.057125 s, onset -19.011 dBFS
+4x SNIPER 0.5 target 0.207846 s, measured 0.211375 s, onset -18.2673 dBFS
+4x SNIPER 0.8 target 0.759032 s, measured 0.762375 s, onset -17.9255 dBFS
+SNIPER onset span 1.08549 dB
+4x REVOLVER 0.2 target 0.155609 s, measured 0.157875 s, onset -28.3898 dBFS
+4x REVOLVER 0.5 target 0.515752 s, measured 0.51575 s, onset -27.409 dBFS
+4x REVOLVER 0.8 target 1.70941 s, measured 1.70887 s, onset -27.0474 dBFS
+REVOLVER onset span 1.3424 dB
+PISTOL 2x trim at 75% / 92%: 1.10156 / 2.22719 s, neutral at 75%: 0.550875 s
+SHOTGUN 2x trim at 75% / 92%: 2.7955 / 5.71175 s, neutral at 75%: 1.39669 s
+SMG 2x trim at 75% / 92%: 1.04619 / 2.09219 s, neutral at 75%: 0.525125 s
+SNIPER 2x trim at 75% / 92%: 1.21844 / 2.54787 s, neutral at 75%: 0.613437 s
+REVOLVER 2x trim at 75% / 92%: 2.79481 / 5.52212 s, neutral at 75%: 1.39731 s
+PASS: measured five-mode ring contours, onset, high trim, macro sound and restore/automation
+
+JUCE v8.0.4
+Stage 8 case 0 max error 0
+Stage 8 case 1 max error 0
+Stage 8 case 2 max error 0
+Stage 8 case 3 max error 0
+Stage 8 case 4 max error 0
+Stage 8 case 5 max error 0
+PASS: stage 8 session fixtures
+
+Test project /tmp/breach-build
+      Start 15: DynamicsSessionRecall
+      Start 12: BalanceSessionRecall
+ 1/19 Test #12: BalanceSessionRecall .............   Passed   15.65 sec
+      Start 17: OutputEqIntegration
+ 2/19 Test #15: DynamicsSessionRecall ............   Passed   18.71 sec
+      Start 10: ModalSessionRecall
+ 3/19 Test #17: OutputEqIntegration ..............   Passed    7.32 sec
+      Start 14: ReverbDSP
+ 4/19 Test #14: ReverbDSP ........................   Passed    5.33 sec
+      Start  8: FormantSessionRecall
+ 5/19 Test #10: ModalSessionRecall ...............   Passed   14.15 sec
+      Start  6: RingsSessionRecall
+ 6/19 Test  #8: FormantSessionRecall .............   Passed   14.81 sec
+      Start  2: SpatialSessionRecall
+ 7/19 Test  #6: RingsSessionRecall ...............   Passed   10.65 sec
+      Start  4: NonlinearSessionRecall
+ 8/19 Test  #4: NonlinearSessionRecall ...........   Passed    7.81 sec
+      Start  1: SpatialDSP
+ 9/19 Test  #2: SpatialSessionRecall .............   Passed    9.62 sec
+      Start 13: DynamicsDSP
+10/19 Test #13: DynamicsDSP ......................   Passed    0.14 sec
+      Start  7: FormantDSP
+11/19 Test  #7: FormantDSP .......................   Passed    0.16 sec
+      Start  3: NonlinearDSP
+12/19 Test  #3: NonlinearDSP .....................   Passed    0.13 sec
+      Start  9: ModalDSP
+13/19 Test  #9: ModalDSP .........................   Passed    0.05 sec
+      Start 16: OutputEqDSP
+14/19 Test #16: OutputEqDSP ......................   Passed    0.01 sec
+      Start 11: BalanceDSP
+15/19 Test #11: BalanceDSP .......................   Passed    0.01 sec
+      Start  5: RingsDSP
+16/19 Test  #5: RingsDSP .........................   Passed    0.02 sec
+      Start 18: Stage8SessionRecall
+17/19 Test #18: Stage8SessionRecall ..............   Passed    1.39 sec
+      Start 19: RingTimeIntegration
+18/19 Test  #1: SpatialDSP .......................   Passed    4.49 sec
+19/19 Test #19: RingTimeIntegration ..............   Passed   23.64 sec
+
+100% tests passed out of 19
+
+Total Test time (real) =  78.31 sec
+
+JUCE v8.0.4
+Fontconfig error: No writable cache directories
+PASS: view navigation, both themes, control bounds, voice macros, selected slot, route add/edit/clear, ring revision, EQ gestures and inspector, saved-state preservation and roundtrip

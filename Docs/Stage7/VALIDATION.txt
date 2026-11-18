@@ -1,0 +1,157 @@
+BREACH stage 7 - delivery validation
+
+Local source only. No GitHub push, pull request, release or CI write/run.
+Build: Linux x86_64, JUCE 8.0.4, C++17, CMake Debug.
+Standalone and VST3: PASS. Bundled license copy checked in both artifacts.
+Existing APVTS definitions, IDs/order/types/ranges/defaults and plugin IDs: unchanged.
+17 new parameters appended. New smearDspRevision is non-parameter session state.
+All source/comment/UI code files ASCII: PASS.
+STK source revision: 6aacd357d76250bb7da2b1ddf675651828784bbc.
+Six new upstream reference hashes: PASS. Existing STK/Rings licenses retained.
+
+Full CTest suite: 15/15 PASS (114.47 sec).
+After the final empty-buffer callback guard: targeted DynamicsSessionRecall PASS,
+including all six legacy fixtures, enabled effects, reported latency and automation.
+No DSP algorithm changed after the full suite's 15/15 run.
+Latest UI smoke after final source build: PASS; E/F/B/shimmer screenshots inspected.
+ASan + UBSan + leak checks on DynamicsDSPTests and ReverbDSPTests: PASS.
+
+Measured / exercised:
+- Stage 6 fixtures: all 6 maximum sample errors exactly 0.
+- Earlier stage fixtures: all prior session-recall CTest targets PASS.
+- Missing new state nodes reset modules to defaults in a previously used instance.
+- Five guns x 1x/2x/4x; 64 vs 1024 samples, aligned automation: max error 0.
+- Zero depth/zero reverb blend: exact bypass from fresh restored state.
+- New state/audio roundtrip and original fixed latency: PASS.
+- Zero-channel / zero-sample callback with new modules enabled: PASS.
+- Linked-stereo dynamics, flat crossover magnitude, soft up/down curves: PASS.
+- Sample-rate-specific SHORT SMEAR impulse energy and short tail: PASS.
+- Four distinct reverb tails, decay, predelay and anti-phase stereo retention: PASS.
+- Granular nominal octave-up band, 440 Hz input: dominant test bin 890 Hz.
+  Sidebands are expected; no pitch-perfect transposition claim is made.
+- UI six tabs, INVERT, control bounds, typed values, new enable controls,
+  Shimmer type selection, saved-state integrity and roundtrip: PASS.
+- 8 audition WAVs: correct 48 kHz / stereo / 24-bit / 8-second format,
+  finite samples, no clipping, one common master gain, no individual normalization.
+- In the supplied synthetic full-plugin example, full SMEAR vs zero RMS delta:
+  -0.4747 dB. This is an example, not a universal input-independent guarantee.
+
+Limits: Windows/macOS/AU builds and actual DAW host behavior not tested here.
+No Release real-time CPU budget or subjective listening-panel quality established.
+Reverb runs at core OS rate; 4x costs more. All mode/rate storage is prepared up front.
+SHIMMER is a feed-forward granular octave layer, not a recursive spectral shifter.
+PLATE is a plate-style NRev voicing, not a physical plate/Dattorro implementation.
+
+
+breach-stage7-ctest-delivery.log
+Test project /tmp/breach-build
+      Start  1: SpatialDSP
+ 1/15 Test  #1: SpatialDSP .......................   Passed    7.48 sec
+      Start  2: SpatialSessionRecall
+ 2/15 Test  #2: SpatialSessionRecall .............   Passed   10.87 sec
+      Start  3: NonlinearDSP
+ 3/15 Test  #3: NonlinearDSP .....................   Passed    0.18 sec
+      Start  4: NonlinearSessionRecall
+ 4/15 Test  #4: NonlinearSessionRecall ...........   Passed    8.47 sec
+      Start  5: RingsDSP
+ 5/15 Test  #5: RingsDSP .........................   Passed    0.07 sec
+      Start  6: RingsSessionRecall
+ 6/15 Test  #6: RingsSessionRecall ...............   Passed   12.67 sec
+      Start  7: FormantDSP
+ 7/15 Test  #7: FormantDSP .......................   Passed    0.32 sec
+      Start  8: FormantSessionRecall
+ 8/15 Test  #8: FormantSessionRecall .............   Passed   12.92 sec
+      Start  9: ModalDSP
+ 9/15 Test  #9: ModalDSP .........................   Passed    0.06 sec
+      Start 10: ModalSessionRecall
+10/15 Test #10: ModalSessionRecall ...............   Passed   17.55 sec
+      Start 11: BalanceDSP
+11/15 Test #11: BalanceDSP .......................   Passed    0.02 sec
+      Start 12: BalanceSessionRecall
+12/15 Test #12: BalanceSessionRecall .............   Passed   20.94 sec
+      Start 13: DynamicsDSP
+13/15 Test #13: DynamicsDSP ......................   Passed    0.18 sec
+      Start 14: ReverbDSP
+14/15 Test #14: ReverbDSP ........................   Passed    6.17 sec
+      Start 15: DynamicsSessionRecall
+15/15 Test #15: DynamicsSessionRecall ............   Passed   16.50 sec
+
+100% tests passed out of 15
+
+Total Test time (real) = 114.47 sec
+
+
+breach-stage7-guard-tests.log
+Test project /tmp/breach-build
+    Start 15: DynamicsSessionRecall
+1/1 Test #15: DynamicsSessionRecall ............   Passed   13.11 sec
+
+100% tests passed out of 1
+
+Total Test time (real) =  13.11 sec
+
+
+LastTest.log
+Start testing: Nov 16 21:22 GMT
+----------------------------------------------------------
+15/15 Testing: DynamicsSessionRecall
+15/15 Test: DynamicsSessionRecall
+Command: "/tmp/breach-build/BreachDynamicsIntegration" "/workspace/gun-vst-1.1.1/Tests/Fixtures/balance_stage6"
+Directory: /tmp/breach-build
+"DynamicsSessionRecall" start time: Nov 16 21:22 GMT
+Output:
+----------------------------------------------------------
+JUCE v8.0.4
+Stage 6 case 0 sample error 0
+Stage 6 case 1 sample error 0
+Stage 6 case 2 sample error 0
+Stage 6 case 3 sample error 0
+Stage 6 case 4 sample error 0
+Stage 6 case 5 sample error 0
+Automated mode 0 OS 0 sample error 0
+Automated mode 0 OS 1 sample error 0
+Automated mode 0 OS 2 sample error 0
+Automated mode 1 OS 0 sample error 0
+Automated mode 1 OS 1 sample error 0
+Automated mode 1 OS 2 sample error 0
+Automated mode 2 OS 0 sample error 0
+Automated mode 2 OS 1 sample error 0
+Automated mode 2 OS 2 sample error 0
+Automated mode 3 OS 0 sample error 0
+Automated mode 3 OS 1 sample error 0
+Automated mode 3 OS 2 sample error 0
+Automated mode 4 OS 0 sample error 0
+Automated mode 4 OS 1 sample error 0
+Automated mode 4 OS 2 sample error 0
+PASS: stage 6 recall, missing-state reset, exact zero bypass, new recall, latency-free controls and automation
+<end of output>
+Test time =  13.11 sec
+----------------------------------------------------------
+Test Passed.
+"DynamicsSessionRecall" end time: Nov 16 21:23 GMT
+"DynamicsSessionRecall" time elapsed: 00:00:13
+----------------------------------------------------------
+
+End testing: Nov 16 21:23 GMT
+
+
+breach-stage7-ui-final.log
+JUCE v8.0.4
+Fontconfig error: No writable cache directories
+PASS: view navigation, both themes, control bounds, macro edit, saved-state preservation and roundtrip
+
+
+breach-dynamics-asan-final.log
+Input amplitude 0.001 output RMS gain 5.88262
+Input amplitude 0.5 output RMS gain 0.248706
+PASS: crossover phase alignment, dynamics curves, linked stereo, exact bypass and short SMEAR
+
+
+breach-reverb-asan.log
+Mode 0 late short/long 1.70307e-18 / 9.40129e-05
+Mode 1 late short/long 1.30498e-22 / 9.43917e-05
+Mode 2 late short/long 1.30838e-15 / 6.14542e-05
+Mode 3 late short/long 7.27483e-19 / 3.65552e-05
+Granular octave dominant bin 890 Hz for 440 Hz input
+PASS: four distinct tails, decay/predelay, anti-phase input, bypass, extreme settings and octave-up
+

@@ -5,220 +5,6 @@ namespace
 {
     constexpr const char* kSemitoneLabels[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 
-    // Pure English comic-book SFX replacing all Japanese Katakana strings
-    constexpr const char* kImpactSfx[5][3] = {
-        { "BANG!!",   "CRACK!!",   "SNAP!!"   }, // 0: PISTOL
-        { "BOOM!!",   "BLAM!!",    "BLAST!!"  }, // 1: SHOTGUN
-        { "BRRRRT!!", "RATATAT!!", "BURST!!"  }, // 2: SMG
-        { "PIERCE!!", "KRAKOW!!",  "SHATTER!!"}, // 3: SNIPER
-        { "THOOM!!",  "CRUSH!!",   "SLAM!!"   }  // 4: REVOLVER
-    };
-
-    constexpr const char* kTailSfx[5] = {
-        "RING...",    // 0: PISTOL
-        "RUMBLE...",  // 1: SHOTGUN
-        "BUZZZ...",   // 2: SMG
-        "ZINGGG...",  // 3: SNIPER
-        "HUMMM..."    // 4: REVOLVER
-    };
-}
-
-//==============================================================================
-// MangaSplitViewport
-//==============================================================================
-MangaSplitViewport::MangaSplitViewport(BreachResonatorAudioProcessor& p, MangaLookAndFeel& l)
-    : processor(p), laf(l)
-{
-    particles.resize(24);
-}
-
-void MangaSplitViewport::tickAnimation()
-{
-    const float tr = processor.telemetry.transientImpulse.load(std::memory_order_relaxed);
-    if (tr > 0.35f && lastTransient <= 0.35f)
-    {
-        recoilVel = 14.0f * tr;
-        flashAlpha = juce::jmin(0.85f, tr * 0.75f);
-        sfxIndex = (sfxIndex + 1) % 3;
-
-        // Spawn angular manga debris shards
-        for (size_t i = 0; i < particles.size(); ++i)
-        {
-            const float angle = (static_cast<float>(i) / static_cast<float>(particles.size())) * juce::MathConstants<float>::twoPi;
-            const float speed = 2.0f + static_cast<float>((i * 7) % 5) * 1.1f;
-            particles[i].x = 0.0f;
-            particles[i].y = 0.0f;
-            particles[i].vx = std::cos(angle) * speed;
-            particles[i].vy = std::sin(angle) * speed;
-            particles[i].size = 2.5f + static_cast<float>(i % 4);
-            particles[i].life = 1.0f;
-        }
-    }
-    lastTransient = tr;
-
-    // Spring recoil integration
-    const float kSpring = 0.24f;
-    const float kDamp = 0.76f;
-    recoilVel += -kSpring * recoilOffset;
-    recoilVel *= kDamp;
-    recoilOffset += recoilVel;
-
-    flashAlpha *= 0.82f;
-
-    for (auto& pt : particles)
-    {
-        if (pt.life > 0.01f)
-        {
-            pt.x += pt.vx;
-            pt.y += pt.vy;
-            pt.life *= 0.91f;
-        }
-    }
-}
-
-void MangaSplitViewport::paint(juce::Graphics& g)
-{
-    const auto bounds = getLocalBounds().toFloat();
-    auto paper = laf.getPaperColour();
-    auto ink   = laf.getInkColour();
-
-    // Subtle transient flash inversion
-    if (flashAlpha > 0.12f)
-    {
-        paper = paper.interpolatedWith(ink, flashAlpha * 0.28f);
-    }
-
-    g.setColour(paper);
-    g.fillRect(bounds);
-
-    // Right-hand manga screentone meter strip (12% width)
-    const float stripW = juce::jmax(34.0f, bounds.getWidth() * 0.12f);
-    const auto mainArea = bounds.withTrimmedRight(stripW);
-    const auto meterArea = bounds.withLeft(bounds.getRight() - stripW);
-
-    // Draw halftone dots in meter strip
-    g.setColour(ink.withAlpha(0.75f));
-    const float outRms = juce::jlimit(0.0f, 1.0f, processor.telemetry.outputRms.load(std::memory_order_relaxed) * 2.4f);
-    const float activeTopY = meterArea.getBottom() - meterArea.getHeight() * outRms;
-
-    for (float y = meterArea.getY() + 4.0f; y < meterArea.getBottom() - 3.0f; y += 5.0f)
-    {
-        const bool isHot = (y >= activeTopY);
-        const float dotR = isHot ? 1.6f : 0.85f;
-        for (float x = meterArea.getX() + 4.0f; x < meterArea.getRight() - 3.0f; x += 5.0f)
-        {
-            g.fillEllipse(x - dotR, y - dotR, dotR * 2.0f, dotR * 2.0f);
-        }
-    }
-
-    // Left-to-center radial harmonic voice rays
-    const int arpVoice = processor.telemetry.activeArpVoice.load(std::memory_order_relaxed);
-    const float focalX = mainArea.getX() + mainArea.getWidth() * 0.42f;
-    const float focalY = mainArea.getCentreY();
-
-    for (int v = 0; v < 12; ++v)
-    {
-        const float energy = juce::jlimit(0.0f, 1.0f,
-            processor.telemetry.voiceEnergies[static_cast<size_t>(v)].load(std::memory_order_relaxed) * 3.5f);
-        const float frac = (static_cast<float>(v) - 5.5f) / 5.5f;
-        const float startY = mainArea.getCentreY() + frac * (mainArea.getHeight() * 0.44f);
-        const float endY   = focalY + frac * (mainArea.getHeight() * 0.14f);
-
-        const bool isArp = (v == arpVoice);
-        const float strokeW = isArp ? 2.4f : (1.0f + energy * 1.6f);
-        g.setColour(ink.withAlpha(isArp ? 1.0f : (0.55f + 0.45f * energy)));
-        g.drawLine(mainArea.getX() + 2.0f, startY, focalX - 8.0f, endY, strokeW);
-    }
-
-    // Center-right kinetic bullet impact & fracture star
-    const float cx = mainArea.getX() + mainArea.getWidth() * 0.68f + recoilOffset;
-    const float cy = mainArea.getCentreY();
-
-    // Fracture radial cracks
-    g.setColour(ink);
-    for (int c = 0; c < 10; ++c)
-    {
-        const float baseA = (static_cast<float>(c) / 10.0f) * juce::MathConstants<float>::twoPi + 0.25f;
-        const float r1 = 18.0f;
-        const float r2 = 34.0f + static_cast<float>((c * 13) % 18) + recoilOffset * 0.7f;
-        const float mx = cx + std::cos(baseA + 0.08f) * ((r1 + r2) * 0.52f);
-        const float my = cy + std::sin(baseA + 0.08f) * ((r1 + r2) * 0.52f);
-
-        juce::Path crack;
-        crack.startNewSubPath(cx + std::cos(baseA) * r1, cy + std::sin(baseA) * r1);
-        crack.lineTo(mx, my);
-        crack.lineTo(cx + std::cos(baseA - 0.05f) * r2, cy + std::sin(baseA - 0.05f) * r2);
-        g.strokePath(crack, juce::PathStrokeType(1.3f));
-    }
-
-    // Jagged starburst crater
-    juce::Path star;
-    constexpr int points = 16;
-    for (int i = 0; i < points; ++i)
-    {
-        const float a = (static_cast<float>(i) / static_cast<float>(points)) * juce::MathConstants<float>::twoPi;
-        const float r = (i % 2 == 0) ? (22.0f + recoilOffset * 0.5f) : 11.0f;
-        const float px = cx + std::cos(a) * r;
-        const float py = cy + std::sin(a) * r;
-        if (i == 0) star.startNewSubPath(px, py);
-        else        star.lineTo(px, py);
-    }
-    star.closeSubPath();
-    g.setColour(paper);
-    g.fillPath(star);
-    g.setColour(ink);
-    g.strokePath(star, juce::PathStrokeType(1.8f));
-
-    // Solid black core & secondary impact dots
-    g.fillEllipse(cx - 8.5f, cy - 8.5f, 17.0f, 17.0f);
-    g.fillEllipse(cx - 16.0f, cy - 15.0f, 8.0f, 8.0f);
-    g.fillEllipse(cx - 15.0f, cy + 8.0f, 7.5f, 7.5f);
-
-    // Incoming projectile slug silhouette
-    juce::Path bullet;
-    bullet.startNewSubPath(cx - 44.0f, cy - 4.0f);
-    bullet.lineTo(cx - 26.0f, cy - 4.0f);
-    bullet.quadraticTo(cx - 19.0f, cy, cx - 26.0f, cy + 4.0f);
-    bullet.lineTo(cx - 44.0f, cy + 4.0f);
-    bullet.closeSubPath();
-    g.setColour(paper);
-    g.fillPath(bullet);
-    g.setColour(ink);
-    g.strokePath(bullet, juce::PathStrokeType(1.6f));
-    g.drawLine(cx - 39.0f, cy - 4.0f, cx - 39.0f, cy + 4.0f, 1.4f);
-
-    // Debris particles
-    for (const auto& pt : particles)
-    {
-        if (pt.life > 0.05f)
-        {
-            g.setColour(ink.withAlpha(pt.life));
-            g.fillRect(cx + pt.x - pt.size * 0.5f, cy + pt.y - pt.size * 0.5f, pt.size, pt.size);
-        }
-    }
-
-    // English Comic-Book SFX Typography (100% ASCII, zero mojibake)
-    const int gunMode = juce::jlimit(0, 4, static_cast<int>(processor.apvts.getRawParameterValue("gunMode")->load()));
-    const juce::String topSfx = kImpactSfx[gunMode][sfxIndex % 3];
-    const juce::String botSfx = kTailSfx[gunMode];
-
-    g.setColour(ink);
-    g.setFont(juce::Font(juce::FontOptions(24.0f, juce::Font::bold | juce::Font::italic)));
-    g.drawText(topSfx,
-               static_cast<int>(mainArea.getX() + 26.0f - recoilOffset * 0.3f),
-               static_cast<int>(mainArea.getY() + 10.0f),
-               220, 32, juce::Justification::centredLeft, false);
-
-    g.setFont(juce::Font(juce::FontOptions(20.0f, juce::Font::bold | juce::Font::italic)));
-    g.drawText(botSfx,
-               static_cast<int>(mainArea.getRight() - 185.0f),
-               static_cast<int>(mainArea.getBottom() - 36.0f),
-               175, 28, juce::Justification::centredRight, false);
-
-    // Panel borders
-    g.setColour(ink);
-    g.drawRect(bounds, 2.0f);
-    g.drawLine(meterArea.getX(), bounds.getY(), meterArea.getX(), bounds.getBottom(), 1.8f);
 }
 
 //==============================================================================
@@ -229,118 +15,85 @@ GunSelectorStrip::GunSelectorStrip(BreachResonatorAudioProcessor& p, MangaLookAn
 {
 }
 
-void GunSelectorStrip::drawGunIcon(juce::Graphics& g, int index, juce::Rectangle<float> area, juce::Colour strokeCol)
+void GunSelectorStrip::drawGunIcon(juce::Graphics& g, int index, juce::Rectangle<float> area,
+                                    juce::Colour foreground, juce::Colour background)
 {
-    g.setColour(strokeCol);
-    const float x = area.getX();
-    const float y = area.getCentreY();
-    const float w = area.getWidth();
+    const void* data[] = {BinaryData::Gun0_svg, BinaryData::Gun1_svg, BinaryData::Gun2_svg, BinaryData::Gun3_svg, BinaryData::Gun4_svg};
+    const int sizes[] = {BinaryData::Gun0_svgSize, BinaryData::Gun1_svgSize, BinaryData::Gun2_svgSize, BinaryData::Gun3_svgSize, BinaryData::Gun4_svgSize};
+    const auto slot = static_cast<size_t>(index);
+    if (!icons[slot])
+        icons[slot] = juce::Drawable::createFromImageData(data[index], static_cast<size_t>(sizes[index]));
+    if (!icons[slot]) return;
 
-    juce::Path p;
-    switch (index)
+    if (!tintedIcons[slot] || iconColours[slot] != foreground)
     {
-        case 0: // PISTOL
-            p.startNewSubPath(x + w * 0.15f, y - 8.0f);
-            p.lineTo(x + w * 0.85f, y - 8.0f);
-            p.lineTo(x + w * 0.85f, y - 1.0f);
-            p.lineTo(x + w * 0.42f, y - 1.0f);
-            p.lineTo(x + w * 0.34f, y + 12.0f);
-            p.lineTo(x + w * 0.18f, y + 12.0f);
-            p.lineTo(x + w * 0.25f, y - 1.0f);
-            p.lineTo(x + w * 0.15f, y - 1.0f);
-            p.closeSubPath();
-            break;
-
-        case 1: // SHOTGUN
-            p.startNewSubPath(x + w * 0.08f, y + 6.0f);
-            p.lineTo(x + w * 0.34f, y - 5.0f);
-            p.lineTo(x + w * 0.92f, y - 5.0f);
-            p.lineTo(x + w * 0.92f, y + 1.0f);
-            p.lineTo(x + w * 0.40f, y + 1.0f);
-            p.lineTo(x + w * 0.18f, y + 11.0f);
-            p.closeSubPath();
-            break;
-
-        case 2: // SMG
-            p.startNewSubPath(x + w * 0.12f, y - 6.0f);
-            p.lineTo(x + w * 0.86f, y - 6.0f);
-            p.lineTo(x + w * 0.86f, y + 1.0f);
-            p.lineTo(x + w * 0.62f, y + 1.0f);
-            p.lineTo(x + w * 0.66f, y + 12.0f);
-            p.lineTo(x + w * 0.54f, y + 12.0f);
-            p.lineTo(x + w * 0.50f, y + 1.0f);
-            p.lineTo(x + w * 0.38f, y + 1.0f);
-            p.lineTo(x + w * 0.32f, y + 11.0f);
-            p.lineTo(x + w * 0.20f, y + 11.0f);
-            p.lineTo(x + w * 0.25f, y + 1.0f);
-            p.lineTo(x + w * 0.12f, y + 1.0f);
-            p.closeSubPath();
-            break;
-
-        case 3: // SNIPER
-            p.startNewSubPath(x + w * 0.06f, y + 6.0f);
-            p.lineTo(x + w * 0.34f, y - 3.0f);
-            p.lineTo(x + w * 0.95f, y - 3.0f);
-            p.lineTo(x + w * 0.95f, y + 1.0f);
-            p.lineTo(x + w * 0.56f, y + 1.0f);
-            p.lineTo(x + w * 0.52f, y + 7.0f);
-            p.lineTo(x + w * 0.43f, y + 7.0f);
-            p.lineTo(x + w * 0.45f, y + 1.0f);
-            p.lineTo(x + w * 0.34f, y + 1.0f);
-            p.lineTo(x + w * 0.14f, y + 9.0f);
-            p.closeSubPath();
-            g.drawRect(x + w * 0.38f, y - 8.5f, w * 0.24f, 4.0f, 1.4f);
-            break;
-
-        case 4: // REVOLVER
-        default:
-            p.startNewSubPath(x + w * 0.16f, y + 9.0f);
-            p.lineTo(x + w * 0.36f, y - 7.0f);
-            p.lineTo(x + w * 0.86f, y - 7.0f);
-            p.lineTo(x + w * 0.86f, y - 1.0f);
-            p.lineTo(x + w * 0.44f, y - 1.0f);
-            p.lineTo(x + w * 0.30f, y + 11.0f);
-            p.closeSubPath();
-            g.drawEllipse(x + w * 0.43f, y - 6.5f, 9.0f, 6.0f, 1.4f);
-            break;
+        auto icon = icons[slot]->createCopy();
+        // Swap the two ink colours without recolouring a replacement twice.
+        icon->replaceColour(juce::Colours::black, juce::Colours::magenta);
+        icon->replaceColour(juce::Colours::white, background);
+        icon->replaceColour(juce::Colours::magenta, foreground);
+        tintedIcons[slot] = std::move(icon);
+        iconColours[slot] = foreground;
     }
 
-    g.strokePath(p, juce::PathStrokeType(1.8f));
+    tintedIcons[slot]->drawWithin(g, area, juce::RectanglePlacement::centred, 1.0f);
 }
 
 void GunSelectorStrip::paint(juce::Graphics& g)
 {
-    static constexpr const char* kTitles[5]    = { "PISTOL",    "SHOTGUN", "SMG",   "SNIPER", "REVOLVER" };
-    static constexpr const char* kSubtitles[5] = { "TRANSIENT", "SCATTER", "BURST", "PIERCE", "CRUSH" };
-
+    static constexpr const char* titles[] {"PISTOL", "SHOTGUN", "SMG", "SNIPER", "REVOLVER"};
+    static constexpr const char* subtitles[] {"TRANSIENT", "SCATTER", "BURST", "PIERCE", "CRUSH"};
     const int currentMode = juce::jlimit(0, 4, static_cast<int>(processor.apvts.getRawParameterValue("gunMode")->load()));
     const auto bounds = getLocalBounds().toFloat();
-    const float cellW = bounds.getWidth() / 5.0f;
-
+    const float cellWidth = bounds.getWidth() / 5.0f;
     const auto paper = laf.getPaperColour();
-    const auto ink   = laf.getInkColour();
+    const auto ink = laf.getInkColour();
+    const auto titleFont = laf.getMangaFont(19.5f, true);
+    const auto subtitleFont = laf.getMangaFont(10.2f, true).withExtraKerningFactor(.08f);
 
+    auto clippedCorners = [](juce::Rectangle<float> r, float corner)
+    {
+        juce::Path path;
+        path.startNewSubPath(r.getX() + corner, r.getY());
+        path.lineTo(r.getRight() - corner, r.getY());
+        path.lineTo(r.getRight(), r.getY() + corner);
+        path.lineTo(r.getRight(), r.getBottom() - corner);
+        path.lineTo(r.getRight() - corner, r.getBottom());
+        path.lineTo(r.getX() + corner, r.getBottom());
+        path.lineTo(r.getX(), r.getBottom() - corner);
+        path.lineTo(r.getX(), r.getY() + corner);
+        path.closeSubPath();
+        return path;
+    };
+
+    g.fillAll(paper);
     for (int i = 0; i < 5; ++i)
     {
-        const auto cell = juce::Rectangle<float>(bounds.getX() + static_cast<float>(i) * cellW, bounds.getY(), cellW, bounds.getHeight());
-        const bool selected = (i == currentMode);
-
-        g.setColour(selected ? ink : paper);
-        g.fillRect(cell);
-
-        const auto fg = selected ? paper : ink;
-        drawGunIcon(g, i, cell.withWidth(cell.getWidth() * 0.52f).reduced(6.0f, 10.0f), fg);
-
-        g.setColour(fg);
-        auto textRect = cell.withTrimmedLeft(cell.getWidth() * 0.48f).reduced(2.0f, 12.0f);
-        g.setFont(laf.getMangaFont(11.5f, true));
-        const auto titleRect = textRect.removeFromTop(textRect.getHeight() * 0.5f);
-        g.drawText(kTitles[i], titleRect, juce::Justification::centredLeft, false);
-        g.setFont(laf.getMangaFont(10.0f, true));
-        g.drawText(kSubtitles[i], textRect, juce::Justification::centredLeft, false);
-
+        const auto cell = juce::Rectangle<float>(bounds.getX() + static_cast<float>(i) * cellWidth,
+                                                  bounds.getY(), cellWidth, bounds.getHeight()).reduced(2.1f, 1.15f);
+        const bool selected = i == currentMode;
+        const auto foreground = selected ? paper : ink;
+        const auto background = selected ? ink : paper;
+        const auto frame = clippedCorners(cell, 5.4f);
+        g.setColour(background);
+        g.fillPath(frame);
         g.setColour(ink);
-        g.drawRect(cell, 1.5f);
+        g.strokePath(frame, juce::PathStrokeType(1.8f));
+        if (selected)
+        {
+            g.setColour(foreground);
+            g.strokePath(clippedCorners(cell.reduced(3.6f), 3.6f), juce::PathStrokeType(1.0f));
+        }
+
+        auto content = cell.reduced(13.0f, 6.0f);
+        const auto subtitle = content.removeFromBottom(14.0f);
+        const auto title = content.removeFromBottom(23.0f);
+        drawGunIcon(g, i, content.reduced(0, 2), foreground, background);
+        g.setColour(foreground);
+        g.setFont(titleFont);
+        g.drawFittedText(titles[i], title.toNearestInt(), juce::Justification::centred, 1);
+        g.setFont(subtitleFont);
+        g.drawFittedText(subtitles[i], subtitle.toNearestInt(), juce::Justification::centred, 1);
     }
 }
 
@@ -349,7 +102,9 @@ void GunSelectorStrip::mouseDown(const juce::MouseEvent& e)
     const int idx = juce::jlimit(0, 4, static_cast<int>((static_cast<float>(e.x) / static_cast<float>(getWidth())) * 5.0f));
     if (auto* param = processor.apvts.getParameter("gunMode"))
     {
+        param->beginChangeGesture();
         param->setValueNotifyingHost(param->convertTo0to1(static_cast<float>(idx)));
+        param->endChangeGesture();
         repaint();
     }
 }
@@ -361,7 +116,13 @@ BreachResonatorAudioProcessorEditor::BreachResonatorAudioProcessorEditor(BreachR
     : AudioProcessorEditor(&p),
       audioProcessor(p),
       viewport(p, mangaLaf),
-      gunStrip(p, mangaLaf)
+      keyboard(p, mangaLaf),
+      settingsBackdrop(mangaLaf),
+      voicePanel(p, mangaLaf),
+      modRoutePanel(p, mangaLaf),
+      gunStrip(p, mangaLaf),
+      eqPanel(p, mangaLaf),
+      ottMeters(p.telemetry, mangaLaf)
 {
     setLookAndFeel(&mangaLaf);
 
@@ -395,7 +156,7 @@ BreachResonatorAudioProcessorEditor::BreachResonatorAudioProcessorEditor(BreachR
 
     panicBtn.onClick = [this]
     {
-        audioProcessor.triggerPanicReset();
+        viewport.triggerPreview();
     };
 
     advancedBtn.setClickingTogglesState(true);
@@ -404,7 +165,7 @@ BreachResonatorAudioProcessorEditor::BreachResonatorAudioProcessorEditor(BreachR
     {
         drawerExpanded = advancedBtn.getToggleState();
         updateDrawerVisibility();
-        setSize(860, drawerExpanded ? 740 : 540);
+        setSize(1024, drawerExpanded ? 765 : 562);
     };
 
     invertBtn.setClickingTogglesState(true);
@@ -415,21 +176,49 @@ BreachResonatorAudioProcessorEditor::BreachResonatorAudioProcessorEditor(BreachR
         repaint();
     };
 
+    panicBtn.setTooltip("Preview the comic impact animation. Use PANIC in keyboard settings to reset audio tails.");
+    addAndMakeVisible(keyboard);
+    addAndMakeVisible(voicePanel);
+    addAndMakeVisible(modRoutePanel);
+    keyboard.onSettings = [this]
+    {
+        performanceSettings = !performanceSettings;
+        updateDrawerVisibility(); resized(); repaint();
+    };
+    addChildComponent(panicResetBtn);
+    panicResetBtn.onClick = [this] { audioProcessor.triggerPanicReset(); };
+    addChildComponent(closeSettingsBtn);
+    closeSettingsBtn.onClick = [this]
+    {
+        performanceSettings = false;
+        updateDrawerVisibility(); repaint();
+    };
+
     // Viewport & Gun Strip
     addAndMakeVisible(viewport);
+    addChildComponent(settingsBackdrop);
     addAndMakeVisible(gunStrip);
 
     // 6 Macro Knobs
     configureRotaryKnob(driveSlider,   driveLabel,   "DRIVE",   false);
-    configureRotaryKnob(spaceSlider,   spaceLabel,   "SPACE",   false);
-    configureRotaryKnob(decaySlider,   decayLabel,   "DECAY",   false);
+    configureRotaryKnob(spaceSlider,   spaceLabel,   "SMEAR",   false);
+    configureRotaryKnob(decaySlider,   decayLabel,   "RING TIME", false);
     configureRotaryKnob(toneSlider,    toneLabel,    "TONE",    false);
     configureRotaryKnob(densitySlider, densityLabel, "DENSITY", false);
     configureRotaryKnob(mixSlider,     mixLabel,     "MIX",     false);
 
+    spaceSlider.setTooltip("SMEAR: short transient diffusion, from focused to blurred. No reverb tail. Legacy automation ID: space.");
+    decaySlider.setTooltip("Sets the ring time of every resonator voice. The readout shows the nominal time before voice trim and damping.");
+
     driveAtt   = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, "drive",   driveSlider);
     spaceAtt   = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, "space",   spaceSlider);
     decayAtt   = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, "decay",   decaySlider);
+    decaySlider.textFromValueFunction = [this](double value)
+    {
+        if (!audioProcessor.usesRingTime()) return juce::String((value - .05) / .95 * 100, 0) + "%";
+        const auto seconds = audioProcessor.nominalRingSeconds(static_cast<float>(value));
+        return seconds < 1 ? juce::String(seconds * 1000, 0) + " ms" : juce::String(seconds, 2) + " s";
+    };
     toneAtt    = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, "tone",    toneSlider);
     densityAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, "density", densitySlider);
     mixAtt     = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, "mix",     mixSlider);
@@ -476,9 +265,9 @@ BreachResonatorAudioProcessorEditor::BreachResonatorAudioProcessorEditor(BreachR
     motionAtt   = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>  (audioProcessor.apvts, "motionEnable", motionBtn);
     arpRateAtt  = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>  (audioProcessor.apvts, "arpRate",      arpRateSlider);
 
-    // Drawer Tabs (4 buttons)
-    juce::TextButton* tabs[4] = { &tabABtn, &tabBBtn, &tabCBtn, &tabDBtn };
-    for (int t = 0; t < 4; ++t)
+    addAndMakeVisible(eqPanel);
+    juce::TextButton* tabs[] = { &tabABtn, &tabBBtn, &tabCBtn, &tabDBtn, &tabEBtn, &tabFBtn, &tabGBtn };
+    for (int t = 0; t < static_cast<int>(std::size(tabs)); ++t)
     {
         tabs[t]->setClickingTogglesState(true);
         tabs[t]->setRadioGroupId(4001);
@@ -488,34 +277,9 @@ BreachResonatorAudioProcessorEditor::BreachResonatorAudioProcessorEditor(BreachR
             activeDrawerTab = t;
             updateDrawerVisibility();
             resized();
+            repaint();
         };
         addAndMakeVisible(tabs[t]);
-    }
-
-    // Tab A // VOICES (12 voice strips)
-    tabAHeaderLabel.setText("PER-VOICE MIXER  //  LEVEL  |  PAN  |  DETUNE (CT)  |  DECAY MUL", juce::dontSendNotification);
-    tabAHeaderLabel.setFont(mangaLaf.getMangaFont(10.5f, true));
-    addAndMakeVisible(tabAHeaderLabel);
-
-    for (int v = 0; v < BreachResonatorAudioProcessor::kMaxVoices; ++v)
-    {
-        auto& row = voiceRows[static_cast<size_t>(v)];
-        row.title.setText("V" + juce::String(v + 1), juce::dontSendNotification);
-        row.title.setFont(mangaLaf.getMangaFont(10.5f, true));
-        row.title.setJustificationType(juce::Justification::centred);
-        addAndMakeVisible(row.title);
-
-        for (auto* s : { &row.level, &row.pan, &row.detune, &row.decay })
-        {
-            s->setSliderStyle(juce::Slider::LinearHorizontal);
-            s->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-            addAndMakeVisible(s);
-        }
-
-        row.levelAtt  = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, "vLevel_"  + juce::String(v), row.level);
-        row.panAtt    = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, "vPan_"    + juce::String(v), row.pan);
-        row.detuneAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, "vDetune_" + juce::String(v), row.detune);
-        row.decayAtt  = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, "vDecay_"  + juce::String(v), row.decay);
     }
 
     // Tab B // RESONATOR
@@ -526,7 +290,8 @@ BreachResonatorAudioProcessorEditor::BreachResonatorAudioProcessorEditor(BreachR
     configureRotaryKnob(attackSlider,    attackLabel,    "ATTACK (MS)",  true);
     configureRotaryKnob(fbDampSlider,    fbDampLabel,    "FB DAMPING",   true);
     configureRotaryKnob(stiffnessSlider, stiffnessLabel, "STIFFNESS",    true);
-    configureRotaryKnob(excHpfSlider,    excHpfLabel,    "EXC HPF (HZ)", true);
+    configureRotaryKnob(excHpfSlider,    excHpfLabel,    "EXC INPUT CUT", true);
+    excHpfSlider.setTooltip("One-pole low cut for the resonator input, in Hz. Use G // EQ for full signal low cut.");
     configureRotaryKnob(excDriveSlider,  excDriveLabel,  "EXC DRIVE",    true);
 
     attackAtt    = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, "resAttack", attackSlider);
@@ -571,40 +336,60 @@ BreachResonatorAudioProcessorEditor::BreachResonatorAudioProcessorEditor(BreachR
     envRelAtt    = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>  (audioProcessor.apvts, "envRelease",   envRelSlider);
     envAmtAtt    = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>  (audioProcessor.apvts, "envAmount",    envAmtSlider);
 
-    static constexpr const char* kRowNames[3] = { "LFO 1", "LFO 2", "ENV" };
-    static constexpr const char* kColNames[6] = { "WARP", "DRIFT", "SHIFT", "Q", "TILT", "DEPTH" };
-    static constexpr const char* kSrcKeys[3]  = { "lfo1", "lfo2", "env" };
-    static constexpr const char* kDstKeys[6]  = { "warp", "drift", "shift", "q", "tilt", "depth" };
-
-    for (int r = 0; r < 3; ++r)
+    balanceRevisionBtn.setTooltip("Fixed wet-level calibration and progressive controls for the upgraded engines. No adaptive auto-gain. Change while stopped.");
+    addAndMakeVisible(balanceRevisionBtn);
+    balanceRevisionBtn.onClick = [this]
     {
-        matrixRowLabels[static_cast<size_t>(r)].setText(kRowNames[r], juce::dontSendNotification);
-        matrixRowLabels[static_cast<size_t>(r)].setFont(mangaLaf.getMangaFont(9.5f, true));
-        matrixRowLabels[static_cast<size_t>(r)].setJustificationType(juce::Justification::centredRight);
-        addAndMakeVisible(matrixRowLabels[static_cast<size_t>(r)]);
-    }
+        audioProcessor.setBalanceRevision(audioProcessor.getBalanceRevision() >= 2 ? 1 : 2);
+        balanceRevisionBtn.setButtonText(audioProcessor.getBalanceRevision() >= 2 ? "LEVELS: BALANCED" : "LEVELS: LEGACY");
+    };
+    balanceRevisionBtn.setButtonText(audioProcessor.getBalanceRevision() >= 2 ? "LEVELS: BALANCED" : "LEVELS: LEGACY");
 
-    for (int c = 0; c < 6; ++c)
+    modalRevisionBtn.setTooltip("Rings modal body for PISTOL / REVOLVER in AUTO or SVF mode. PISTOL: six shorter modes; REVOLVER: twelve longer modes. Change while stopped.");
+    addAndMakeVisible(modalRevisionBtn);
+    modalRevisionBtn.onClick = [this]
     {
-        matrixColLabels[static_cast<size_t>(c)].setText(kColNames[c], juce::dontSendNotification);
-        matrixColLabels[static_cast<size_t>(c)].setFont(mangaLaf.getMangaFont(9.5f, true));
-        matrixColLabels[static_cast<size_t>(c)].setJustificationType(juce::Justification::centred);
-        addAndMakeVisible(matrixColLabels[static_cast<size_t>(c)]);
-    }
+        audioProcessor.setModalDspRevision(audioProcessor.getModalDspRevision() >= 2 ? 1 : 2);
+        modalRevisionBtn.setButtonText(audioProcessor.getModalDspRevision() >= 2 ? "MODAL: RINGS" : "MODAL: LEGACY");
+    };
+    modalRevisionBtn.setButtonText(audioProcessor.getModalDspRevision() >= 2 ? "MODAL: RINGS" : "MODAL: LEGACY");
 
-    for (int r = 0; r < 3; ++r)
+    formantRevisionBtn.setTooltip("STK four-formant body plus pitched resonance. Applies to SMG / DUAL FORMANT. TONE morphs A-E-I-O-U; FB DAMPING broadens the formants. Change while stopped.");
+    addAndMakeVisible(formantRevisionBtn);
+    formantRevisionBtn.onClick = [this]
     {
-        for (int c = 0; c < 6; ++c)
-        {
-            const size_t idx = static_cast<size_t>(r * 6 + c);
-            auto& sl = matrixSliders[idx];
-            sl.setSliderStyle(juce::Slider::LinearHorizontal);
-            sl.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-            addAndMakeVisible(sl);
-            matrixAtts[idx] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
-                audioProcessor.apvts, juce::String("mod_") + kSrcKeys[r] + "_" + kDstKeys[c], sl);
-        }
-    }
+        audioProcessor.setFormantDspRevision(audioProcessor.getFormantDspRevision() >= 2 ? 1 : 2);
+        formantRevisionBtn.setButtonText(audioProcessor.getFormantDspRevision() >= 2 ? "FORMANT: STK" : "FORMANT: LEGACY");
+    };
+    formantRevisionBtn.setButtonText(audioProcessor.getFormantDspRevision() >= 2 ? "FORMANT: STK" : "FORMANT: LEGACY");
+    toneSlider.setTooltip("TONE. In STK formant mode, also morphs vowel A-E-I-O-U.");
+
+    stringRevisionBtn.setTooltip("Adapted Mutable Instruments Rings string model. Applies to SHOTGUN or the COMB STRING override. Change while stopped.");
+    addAndMakeVisible(stringRevisionBtn);
+    stringRevisionBtn.onClick = [this]
+    {
+        audioProcessor.setStringDspRevision(audioProcessor.getStringDspRevision() >= 2 ? 1 : 2);
+        stringRevisionBtn.setButtonText(audioProcessor.getStringDspRevision() >= 2 ? "STRING: RINGS" : "STRING: LEGACY");
+    };
+    stringRevisionBtn.setButtonText(audioProcessor.getStringDspRevision() >= 2 ? "STRING: RINGS" : "STRING: LEGACY");
+
+    nonlinearRevisionBtn.setTooltip("DRIVE/SNIPER anti-aliasing. Change while transport is stopped so the host can update latency compensation.");
+    addAndMakeVisible(nonlinearRevisionBtn);
+    nonlinearRevisionBtn.onClick = [this]
+    {
+        audioProcessor.setNonlinearDspRevision(audioProcessor.getNonlinearDspRevision() >= 2 ? 1 : 2);
+        nonlinearRevisionBtn.setButtonText(audioProcessor.getNonlinearDspRevision() >= 2 ? "DRIVE DSP: NEW" : "DRIVE DSP: LEGACY");
+    };
+    nonlinearRevisionBtn.setButtonText(audioProcessor.getNonlinearDspRevision() >= 2 ? "DRIVE DSP: NEW" : "DRIVE DSP: LEGACY");
+
+    spatialRevisionBtn.setTooltip("Switch spatial DSP. LEGACY preserves v1.1.2 sessions; NEW enables corrected diffusion and frequency shifting.");
+    addAndMakeVisible(spatialRevisionBtn);
+    spatialRevisionBtn.onClick = [this]
+    {
+        audioProcessor.setSpatialDspRevision(audioProcessor.getSpatialDspRevision() >= 2 ? 1 : 2);
+        spatialRevisionBtn.setButtonText(audioProcessor.getSpatialDspRevision() >= 2 ? "SPATIAL: NEW" : "SPATIAL: LEGACY");
+    };
+    spatialRevisionBtn.setButtonText(audioProcessor.getSpatialDspRevision() >= 2 ? "SPATIAL: NEW" : "SPATIAL: LEGACY");
 
     // Tab D // GLOBAL
     configureRotaryKnob(inGainSlider,  inGainLbl,  "IN GAIN (DB)",  true);
@@ -644,8 +429,125 @@ BreachResonatorAudioProcessorEditor::BreachResonatorAudioProcessorEditor(BreachR
 
     limiterBtn.setButtonText(limiterBtn.getToggleState() ? "LIMITER: ON" : "LIMITER: OFF");
 
+    addAndMakeVisible(smearRevisionBtn);
+    addAndMakeVisible(ringTimeBtn);
+    ringTimeBtn.setTooltip("Choose physical ring time or the original decay mapping. Switch with playback stopped.");
+    ringTimeBtn.setButtonText(audioProcessor.usesRingTime() ? "RING: NEW" : "RING: LEGACY");
+    ringTimeBtn.onClick = [this]
+    {
+        audioProcessor.setRingTimeEnabled(!audioProcessor.usesRingTime());
+        ringTimeBtn.setButtonText(audioProcessor.usesRingTime() ? "RING: NEW" : "RING: LEGACY");
+    };
+    smearRevisionBtn.setTooltip("SHORT uses compact diffusion with a true zero point in every gun mode. LEGACY recalls earlier SPACE behavior. Change while stopped.");
+    smearRevisionBtn.onClick = [this]
+    {
+        const bool shortMode = !audioProcessor.isShortSmearEnabled();
+        if (shortMode) audioProcessor.setSpatialDspRevision(2);
+        audioProcessor.setSmearDspRevision(shortMode ? 2 : 1);
+        smearRevisionBtn.setButtonText(shortMode ? "SMEAR: SHORT" : "SMEAR: LEGACY");
+    };
+    smearRevisionBtn.setButtonText(audioProcessor.isShortSmearEnabled() ? "SMEAR: SHORT" : "SMEAR: LEGACY");
+    smearInfo.setText("SHORT DIFFUSION // REVERB IS IN TAB F", juce::dontSendNotification);
+    smearInfo.setFont(mangaLaf.getMangaFont(14)); addAndMakeVisible(smearInfo);
+
+    const char* ottIds[] = {"ottDepth", "ottTime", "ottUp", "ottDown", "ottInGain", "ottOutGain", "ottLowSplit", "ottHighSplit"};
+    const char* ottNames[] = {"DEPTH", "TIME", "UPWARD", "DOWNWARD", "IN GAIN", "OUT GAIN", "LOW SPLIT", "HIGH SPLIT"};
+    const char* ottTips[] = {
+        "Amount of compression across all three bands. 0% bypasses OTT.",
+        "Release speed. 100% uses the model's measured timings.",
+        "Lift quieter details in each band.", "Tame louder peaks in each band.",
+        "Input trim before the detector.", "Output trim before the resonator.",
+        "Low/mid crossover frequency.", "Mid/high crossover frequency."
+    };
+    for (std::size_t i = 0; i < ottSliders.size(); ++i)
+    {
+        auto& slider = ottSliders[i];
+        configureRotaryKnob(slider, ottLabels[i], ottNames[i], true);
+        slider.setTooltip(ottTips[i]);
+        ottAttachments[i] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts, ottIds[i], slider);
+    }
+    auto percentDisplay = [](juce::Slider& slider)
+    {
+        slider.textFromValueFunction = [](double value) { return juce::String(value * 100, 1) + "%"; };
+        slider.valueFromTextFunction = [](const juce::String& text) { return text.getDoubleValue() * .01; };
+        slider.updateText();
+    };
+    ottSliders[0].setName("OTT DEPTH");
+    percentDisplay(ottSliders[0]);
+    ottSliders[1].setTextValueSuffix("%");
+    for (std::size_t i : { 2u, 3u })
+    {
+        auto& slider = ottSliders[i];
+        slider.textFromValueFunction = [this](double value)
+        {
+            return juce::String(value * (audioProcessor.usesFaustOtt() ? 200 : 100), 1) + "%";
+        };
+        slider.valueFromTextFunction = [this](const juce::String& text)
+        {
+            return text.getDoubleValue() / (audioProcessor.usesFaustOtt() ? 200 : 100);
+        };
+        slider.updateText();
+    }
+    for (std::size_t i : { 4u, 5u }) ottSliders[i].setTextValueSuffix(" dB");
+    for (std::size_t i : { 6u, 7u }) ottSliders[i].setTextValueSuffix(" Hz");
+    ottLabels[0].setFont(mangaLaf.getMangaFont(17, true));
+    ottEnableBtn.setClickingTogglesState(true);
+    ottEnableAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(audioProcessor.apvts, "ottEnable", ottEnableBtn);
+    ottEnableBtn.onClick = [this] { refreshOttPanel(); };
+    ottSetupBtn.onClick = [this]
+    {
+        ottSetupOpen = !ottSetupOpen;
+        ottSetupBtn.setButtonText(ottSetupOpen ? "< BACK" : "SETUP >");
+        updateDrawerVisibility();
+    };
+    ottModelBtn.setTooltip("FAUST uses the measured model. CLASSIC preserves the earlier BREACH response.");
+    ottModelBtn.onClick = [this]
+    {
+        audioProcessor.setFaustOttEnabled(!audioProcessor.usesFaustOtt());
+        refreshOttPanel();
+    };
+    ottHeader.setText("INPUT DYNAMICS  /  BEFORE RESONATOR", juce::dontSendNotification);
+    ottHeader.setFont(mangaLaf.getMangaFont(16, true));
+    for (auto* component : std::initializer_list<juce::Component*> {
+             &ottEnableBtn, &ottSetupBtn, &ottModelBtn, &ottHeader, &ottMeters })
+        addAndMakeVisible(*component);
+    ottFaustDisplayed = !audioProcessor.usesFaustOtt();
+    refreshOttPanel();
+
+    const char* reverbIds[] = {"reverbMix","reverbDecay","reverbPreDelay","reverbDamping","reverbWidth","reverbShimmer"};
+    const char* reverbNames[] = {"BLEND","DECAY (S)","PREDELAY (MS)","DAMPING","WIDTH","SHIMMER"};
+    const char* reverbTips[] = {"Separate post-resonator reverb mix. Zero is dry.","Reverb decay target in seconds, separate from resonator DECAY.",
+        "Delay before the reverb starts.","Darkens the feedback and shortens high-frequency ringing.","Stereo width of the reverb only.","Octave-up layer amount, active only in SHIMMER mode."};
+    for(size_t i=0;i<6;++i)
+    {
+        configureRotaryKnob(reverbSliders[i],reverbLabels[i],reverbNames[i],true);
+        reverbSliders[i].setTooltip(reverbTips[i]);
+        reverbAttachments[i]=std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(audioProcessor.apvts,reverbIds[i],reverbSliders[i]);
+    }
+    for(size_t i:{0u,3u,4u,5u})percentDisplay(reverbSliders[i]);
+    reverbEnableBtn.setClickingTogglesState(true);addAndMakeVisible(reverbEnableBtn);
+    reverbEnableAttachment=std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(audioProcessor.apvts,"reverbEnable",reverbEnableBtn);
+    reverbEnableBtn.onClick=[this]{reverbEnableBtn.setButtonText(reverbEnableBtn.getToggleState()?"REVERB: ON":"REVERB: OFF");};
+    reverbEnableBtn.onClick();
+    reverbTypeBox.addItemList({"HALL","PLATE","SPACE","SHIMMER"},1);addAndMakeVisible(reverbTypeBox);
+    reverbTypeBox.setTooltip("HALL: open room. PLATE: compact and dense. SPACE: large and sparse. SHIMMER: octave-up late field.");
+    reverbTypeBox.setName("REVERB TYPE");
+    reverbTypeAttachment=std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(audioProcessor.apvts,"reverbType",reverbTypeBox);
+    reverbTypeBox.onChange=[this]
+    {
+        const bool shimmerMode=reverbTypeBox.getSelectedId()==4;
+        reverbSliders[5].setEnabled(shimmerMode);
+        reverbSliders[5].setAlpha(shimmerMode?1.0f:.35f);
+        reverbLabels[5].setAlpha(shimmerMode?1.0f:.35f);
+    };
+    reverbTypeBox.onChange();
+    reverbHeader.setText("BREACH MIX -> REVERB -> OUTPUT",juce::dontSendNotification);
+    reverbHeader.setFont(mangaLaf.getMangaFont(17));addAndMakeVisible(reverbHeader);
+    reverbInfo.setText("SMEAR BLURS TRANSIENTS. REVERB ADDS A SEPARATE TAIL.",juce::dontSendNotification);
+    reverbInfo.setFont(mangaLaf.getMangaFont(13));addAndMakeVisible(reverbInfo);
+
     updateDrawerVisibility();
-    setSize(860, drawerExpanded ? 740 : 540);
+    setSize(1024, drawerExpanded ? 765 : 562);
     startTimerHz(60);
 }
 
@@ -660,6 +562,9 @@ void BreachResonatorAudioProcessorEditor::configureRotaryKnob(juce::Slider& slid
                                                               const juce::String& text,
                                                               bool showTextBox)
 {
+    slider.setName(text);
+    slider.setTooltip(text);
+    slider.setPopupDisplayEnabled(!showTextBox, !showTextBox, this);
     slider.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
     if (showTextBox)
         slider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 64, 17);
@@ -667,7 +572,7 @@ void BreachResonatorAudioProcessorEditor::configureRotaryKnob(juce::Slider& slid
         slider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
 
     label.setText(text, juce::dontSendNotification);
-    label.setFont(mangaLaf.getMangaFont(10.0f, true));
+    label.setFont(mangaLaf.getMangaFont(showTextBox ? 15.0f : 24.0f, false));
     label.setJustificationType(juce::Justification::centred);
 
     addAndMakeVisible(slider);
@@ -676,29 +581,38 @@ void BreachResonatorAudioProcessorEditor::configureRotaryKnob(juce::Slider& slid
 
 void BreachResonatorAudioProcessorEditor::updateDrawerVisibility()
 {
+    settingsBackdrop.setVisible(performanceSettings);
+    if (performanceSettings) settingsBackdrop.toFront(false);
     const bool showA = drawerExpanded && (activeDrawerTab == 0);
     const bool showB = drawerExpanded && (activeDrawerTab == 1);
     const bool showC = drawerExpanded && (activeDrawerTab == 2);
     const bool showD = drawerExpanded && (activeDrawerTab == 3);
+    const bool showE = drawerExpanded && (activeDrawerTab == 4);
+    const bool showF = drawerExpanded && (activeDrawerTab == 5);
 
     tabABtn.setVisible(drawerExpanded);
     tabBBtn.setVisible(drawerExpanded);
     tabCBtn.setVisible(drawerExpanded);
     tabDBtn.setVisible(drawerExpanded);
+    tabEBtn.setVisible(drawerExpanded);tabFBtn.setVisible(drawerExpanded);tabGBtn.setVisible(drawerExpanded);
+    eqPanel.setVisible(drawerExpanded && activeDrawerTab == 6);
+    if (eqPanel.isVisible()) eqPanel.refresh();
 
-    // Tab A
-    tabAHeaderLabel.setVisible(showA);
-    for (auto& row : voiceRows)
+    voicePanel.setVisible(showA);
+    modRoutePanel.setVisible(showC);
+    if (showC) modRoutePanel.refresh();
+
+    for (auto* component : std::initializer_list<juce::Component*>{&rootNoteBox, &octaveBox, &voiceCapBox, &midiBtn,
+             &arpBtn, &arpDirBox, &motionBtn, &arpRateSlider, &closeSettingsBtn, &panicResetBtn})
     {
-        row.title.setVisible(showA);
-        row.level.setVisible(showA);
-        row.pan.setVisible(showA);
-        row.detune.setVisible(showA);
-        row.decay.setVisible(showA);
+        component->setVisible(performanceSettings);
+        if (performanceSettings) component->toFront(false);
     }
+    for (auto& note : noteButtons) note.setVisible(false);
 
     // Tab B
     resTopologyBox.setVisible(showB);
+    ringTimeBtn.setVisible(showB);smearRevisionBtn.setVisible(showB);smearInfo.setVisible(showB);
     for (auto* c : std::initializer_list<juce::Component*>{
              &attackSlider, &attackLabel, &fbDampSlider, &fbDampLabel,
              &stiffnessSlider, &stiffnessLabel, &excHpfSlider, &excHpfLabel,
@@ -716,151 +630,186 @@ void BreachResonatorAudioProcessorEditor::updateDrawerVisibility()
     {
         c->setVisible(showC);
     }
-    for (auto& l : matrixRowLabels) l.setVisible(showC);
-    for (auto& l : matrixColLabels) l.setVisible(showC);
-    for (auto& s : matrixSliders)   s.setVisible(showC);
-
     // Tab D
     for (auto* c : std::initializer_list<juce::Component*>{
              &inGainSlider, &inGainLbl, &outGainSlider, &outGainLbl,
              &widthSlider, &widthLbl, &mixCurveLbl, &mixCurveBox,
-             &oversampleLbl, &oversampleBox, &limiterBtn, &smoothSlider, &smoothLbl })
+             &oversampleLbl, &oversampleBox, &limiterBtn, &spatialRevisionBtn, &nonlinearRevisionBtn, &stringRevisionBtn, &formantRevisionBtn, &modalRevisionBtn, &balanceRevisionBtn, &smoothSlider, &smoothLbl })
     {
         c->setVisible(showD);
+    }
+    ottEnableBtn.setVisible(showE);
+    ottSetupBtn.setVisible(showE);
+    ottHeader.setVisible(showE);
+    ottModelBtn.setVisible(showE && ottSetupOpen);
+    ottMeters.setVisible(showE && !ottSetupOpen);
+    for (std::size_t i = 0; i < ottSliders.size(); ++i)
+    {
+        const bool visible = showE && (i < 4 || i == 5 || ottSetupOpen);
+        ottSliders[i].setVisible(visible);
+        ottLabels[i].setVisible(visible);
+    }
+    if (showE) refreshOttPanel();
+    reverbEnableBtn.setVisible(showF);reverbTypeBox.setVisible(showF);reverbHeader.setVisible(showF);reverbInfo.setVisible(showF);
+    for(auto& c:reverbSliders)c.setVisible(showF);
+    for(auto& c:reverbLabels)c.setVisible(showF);
+}
+
+void BreachResonatorAudioProcessorEditor::refreshOttPanel()
+{
+    ottEnableBtn.setButtonText(ottEnableBtn.getToggleState() ? "OTT: ON" : "OTT: OFF");
+    const bool useFaust = audioProcessor.usesFaustOtt();
+    if (useFaust != ottFaustDisplayed)
+    {
+        ottFaustDisplayed = useFaust;
+        ottModelBtn.setButtonText(useFaust ? "MODEL: FAUST" : "MODEL: CLASSIC");
+        ottSliders[1].setTooltip(useFaust ? "Release speed. 100% uses the model's measured timings."
+                                          : "Scales attack and release together. 100% uses classic timing.");
+        ottSliders[2].updateText();
+        ottSliders[3].updateText();
+    }
+    if (ottMeters.isVisible()) ottMeters.repaint();
+}
+
+void BreachResonatorAudioProcessorEditor::OttGainMeters::paint(juce::Graphics& g)
+{
+    const auto ink = laf.getInkColour();
+    const auto paper = laf.getPaperColour();
+    auto area = getLocalBounds().reduced(1);
+    g.setColour(ink.withAlpha(.52f));
+    g.drawRect(area);
+    area.reduce(9, 4);
+    auto header = area.removeFromTop(17);
+    header.removeFromLeft(49);
+    header.removeFromRight(83);
+    g.setColour(ink);
+    g.setFont(laf.getMangaFont(12, true));
+    g.drawText("CUT", header.removeFromLeft(header.getWidth() / 2), juce::Justification::centred);
+    g.drawText("LIFT", header, juce::Justification::centred);
+
+    constexpr const char* bandNames[] { "LOW", "MID", "HIGH" };
+    for (std::size_t band = 0; band < telemetry.ottGainDb.size(); ++band)
+    {
+        auto row = area.removeFromTop(24);
+        auto name = row.removeFromLeft(49);
+        auto value = row.removeFromRight(83);
+        auto track = row.reduced(0, 5);
+        const int centre = track.getCentreX();
+        const float db = telemetry.ottGainDb[band].load(std::memory_order_relaxed);
+        const int end = centre + juce::roundToInt(juce::jlimit(-36.0f, 36.0f, db) * static_cast<float>(track.getWidth()) / 72);
+        g.setColour(ink);
+        g.setFont(laf.getMangaFont(14, true));
+        g.drawText(bandNames[band], name, juce::Justification::centredLeft);
+        const float displayDb = std::abs(db) < .05f ? 0.0f : db;
+        const auto signedValue = (displayDb > 0 ? juce::String("+") : juce::String()) + juce::String(displayDb, 1) + " dB";
+        g.drawText(signedValue, value.reduced(5, 0), juce::Justification::centredRight);
+        g.setColour(ink.withAlpha(.18f));
+        g.fillRect(track);
+        if (centre != end)
+        {
+            g.setColour(ink);
+            g.fillRect(juce::jmin(centre, end), track.getY(), std::abs(end - centre), track.getHeight());
+        }
+        g.setColour(paper);
+        g.drawVerticalLine(centre, static_cast<float>(track.getY() - 1), static_cast<float>(track.getBottom() + 1));
     }
 }
 
 void BreachResonatorAudioProcessorEditor::timerCallback()
 {
-    viewport.tickAnimation();
-    viewport.repaint();
+    if (modRoutePanel.isVisible()) modRoutePanel.refresh();
+    ringTimeBtn.setButtonText(audioProcessor.usesRingTime() ? "RING: NEW" : "RING: LEGACY");
+    if (eqPanel.isVisible()) eqPanel.refresh();
+    smearRevisionBtn.setButtonText(audioProcessor.isShortSmearEnabled()?"SMEAR: SHORT":"SMEAR: LEGACY");
+    if (ottEnableBtn.isVisible()) refreshOttPanel();
+    reverbEnableBtn.setButtonText(reverbEnableBtn.getToggleState()?"REVERB: ON":"REVERB: OFF");
+    nonlinearRevisionBtn.setButtonText(audioProcessor.getNonlinearDspRevision() >= 2 ? "DRIVE DSP: NEW" : "DRIVE DSP: LEGACY");
+    stringRevisionBtn.setButtonText(audioProcessor.getStringDspRevision() >= 2 ? "STRING: RINGS" : "STRING: LEGACY");
+    formantRevisionBtn.setButtonText(audioProcessor.getFormantDspRevision() >= 2 ? "FORMANT: STK" : "FORMANT: LEGACY");
+    modalRevisionBtn.setButtonText(audioProcessor.getModalDspRevision() >= 2 ? "MODAL: RINGS" : "MODAL: LEGACY");
+    balanceRevisionBtn.setButtonText(audioProcessor.getBalanceRevision() >= 2 ? "LEVELS: BALANCED" : "LEVELS: LEGACY");
+    viewport.tickAnimation(juce::Time::getMillisecondCounterHiRes());
+    keyboard.repaint();
+    gunStrip.repaint();
+    spatialRevisionBtn.setButtonText(audioProcessor.getSpatialDspRevision() >= 2 ? "SPATIAL: NEW" : "SPATIAL: LEGACY");
+    limiterBtn.setButtonText(limiterBtn.getToggleState() ? "LIMITER: ON" : "LIMITER: OFF");
 }
 
 void BreachResonatorAudioProcessorEditor::paint(juce::Graphics& g)
 {
-    const auto bounds = getLocalBounds().toFloat();
     const auto paper = mangaLaf.getPaperColour();
-    const auto ink   = mangaLaf.getInkColour();
-
-    g.fillAll(paper);
-
-    // Outer manga page frame
-    g.setColour(ink);
-    g.drawRect(bounds.reduced(1.0f), 2.5f);
-
-    // Top-left reticle icon + "BREACH // RESONATOR" ASCII title
-    const float cx = 28.0f;
-    const float cy = 24.0f;
-    g.drawEllipse(cx - 10.0f, cy - 10.0f, 20.0f, 20.0f, 1.8f);
-    g.drawLine(cx - 14.0f, cy, cx + 14.0f, cy, 1.8f);
-    g.drawLine(cx, cy - 14.0f, cx, cy + 14.0f, 1.8f);
-
-    g.setFont(juce::Font(juce::FontOptions(17.5f, juce::Font::bold)));
-    g.drawText("BREACH // RESONATOR", 48, 10, 215, 28, juce::Justification::centredLeft, false);
-
-    g.setFont(mangaLaf.getMangaFont(9.5f, true));
-    g.setColour(mangaLaf.getMutedInkColour());
-    g.drawText("v1.1.2", 575, 14, 48, 22, juce::Justification::centredRight, false);
-
-    // Horizontal divider below main panel / gun strip
-    g.setColour(ink);
-    g.drawLine(0.0f, 444.0f, bounds.getWidth(), 444.0f, 2.0f);
-    g.drawLine(0.0f, 540.0f, bounds.getWidth(), 540.0f, 2.0f);
-
+    const auto ink = mangaLaf.getInkColour();
+    g.fillAll(paper); g.setColour(ink);
+    g.drawEllipse(24.0f, 18.0f, 44.0f, 44.0f, 2.0f);
+    g.drawLine(17.0f, 40.0f, 39.0f, 40.0f, 2.0f);
+    g.drawLine(52.0f, 40.0f, 75.0f, 40.0f, 2.0f);
+    g.drawLine(46.0f, 10.0f, 46.0f, 32.0f, 2.0f);
+    g.drawLine(46.0f, 47.0f, 46.0f, 69.0f, 2.0f);
+    g.fillEllipse(44.0f, 38.0f, 4.0f, 4.0f);
+    g.setFont(juce::Font(juce::FontOptions(40.0f, juce::Font::bold)));
+    g.drawText("BREACH //", 90, 17, 200, 43, juce::Justification::centredLeft, false);
+    g.setFont(mangaLaf.getMangaFont(24.0f, true));
+    g.drawText("RESONATOR", 285, 23, 99, 33, juce::Justification::centredLeft, false);
     if (drawerExpanded)
     {
-        const auto drawerFrame = juce::Rectangle<float>(10.0f, 548.0f, bounds.getWidth() - 20.0f, bounds.getHeight() - 558.0f);
-        g.drawRect(drawerFrame, 1.8f);
+        g.drawRoundedRectangle(14.0f, 565.0f, 996.0f, 187.0f, 3.0f, 2.0f);
+        g.drawLine(14.0f, 603.0f, 1010.0f, 603.0f, 1.7f);
     }
+
 }
 
 void BreachResonatorAudioProcessorEditor::resized()
 {
-    // Top Header Bar (y: 10..38)
-    prevPresetBtn.setBounds(268, 11, 26, 26);
-    chordPresetBox.setBounds(298, 11, 134, 26);
-    nextPresetBtn.setBounds(436, 11, 26, 26);
-
-    panicBtn.setBounds(630, 11, 66, 26);
-    advancedBtn.setBounds(702, 11, 80, 26);
-    invertBtn.setBounds(788, 11, 60, 26);
-
-    // Left Macro Knobs (x: 16..156)
+    prevPresetBtn.setBounds(399, 21, 37, 37);
+    chordPresetBox.setBounds(446, 21, 138, 37);
+    nextPresetBtn.setBounds(594, 21, 37, 37);
+    panicBtn.setBounds(662, 21, 102, 37);
+    advancedBtn.setBounds(774, 21, 118, 37);
+    invertBtn.setBounds(903, 21, 103, 37);
     auto placeMacro = [](juce::Slider& s, juce::Label& l, int x, int y)
     {
-        s.setBounds(x, y, 104, 96);
-        l.setBounds(x, y + 96, 104, 18);
+        s.setBounds(x, y, 100, 94); l.setBounds(x - 6, y + 89, 112, 28);
     };
-
-    placeMacro(driveSlider,   driveLabel,   32,  54);
-    placeMacro(spaceSlider,   spaceLabel,   32, 180);
-    placeMacro(decaySlider,   decayLabel,   32, 306);
-
-    // Right Macro Knobs (x: 704..844)
-    placeMacro(toneSlider,    toneLabel,    724,  54);
-    placeMacro(densitySlider, densityLabel, 724, 180);
-    placeMacro(mixSlider,     mixLabel,     724, 306);
-
-    // Center Manga Viewport
-    viewport.setBounds(168, 52, 524, 326);
-
-    // Chord & Arp Control Strip (y: 384..436)
-    int nx = 168;
-    for (int i = 0; i < 12; ++i)
+    placeMacro(driveSlider, driveLabel, 38, 89);
+    placeMacro(spaceSlider, spaceLabel, 38, 209);
+    placeMacro(decaySlider, decayLabel, 38, 329);
+    placeMacro(toneSlider, toneLabel, 885, 89);
+    placeMacro(densitySlider, densityLabel, 885, 209);
+    placeMacro(mixSlider, mixLabel, 885, 329);
+    viewport.setBounds(175, 90, 674, 316);
+    keyboard.setBounds(175, 405, 674, 39);
+    gunStrip.setBounds(13, 455, 998, 95);
+    rootNoteBox.setBounds(328, 320, 65, 28);
+    octaveBox.setBounds(399, 320, 82, 28);
+    voiceCapBox.setBounds(487, 320, 86, 28);
+    midiBtn.setBounds(579, 320, 65, 28);
+    panicResetBtn.setBounds(651, 320, 91, 28);
+    closeSettingsBtn.setBounds(754, 320, 80, 28);
+    arpBtn.setBounds(192, 360, 65, 28);
+    arpDirBox.setBounds(264, 360, 88, 28);
+    motionBtn.setBounds(360, 360, 88, 28);
+    arpRateSlider.setBounds(462, 360, 369, 28);
+    settingsBackdrop.setBounds(180, 312, 664, 89);
+    if (!drawerExpanded) return;
+    juce::TextButton* tabs[] = {&tabABtn, &tabBBtn, &tabCBtn, &tabDBtn, &tabEBtn, &tabFBtn, &tabGBtn};
+    constexpr std::array<int, 7> widths {{121, 156, 156, 134, 144, 140, 115}};
+    int tabX = 14;
+    for (std::size_t t = 0; t < widths.size(); ++t)
     {
-        noteButtons[static_cast<size_t>(i)].setBounds(nx, 385, 22, 22);
-        nx += 24;
+        tabs[t]->setBounds(tabX, 565, widths[t], 38);
+        tabX += widths[t] + 5;
     }
-
-    // Widened Root, Octave, Voice Cap, MIDI boxes so text never clips to "..."
-    rootNoteBox.setBounds(458, 385, 48, 22);
-    octaveBox.setBounds(510, 385, 58, 22);
-    voiceCapBox.setBounds(572, 385, 62, 22);
-    midiBtn.setBounds(638, 385, 54, 22);
-
-    // Second sub-row: ARP, DIR, MOTION, Rate Slider
-    arpBtn.setBounds(168, 412, 48, 22);
-    arpDirBox.setBounds(220, 412, 68, 22);
-    motionBtn.setBounds(292, 412, 66, 22);
-    arpRateSlider.setBounds(364, 412, 328, 22);
-
-    // 5 Gun Topology Strip (y: 444..540)
-    gunStrip.setBounds(0, 444, 860, 96);
-
-    if (!drawerExpanded)
-        return;
-
-    // Advanced Drawer Tabs (y: 556..580)
-    const int tabW = 204;
-    tabABtn.setBounds(18,            556, tabW, 24);
-    tabBBtn.setBounds(18 + tabW + 4, 556, tabW, 24);
-    tabCBtn.setBounds(18 + (tabW + 4) * 2, 556, tabW, 24);
-    tabDBtn.setBounds(18 + (tabW + 4) * 3, 556, tabW, 24);
-
-    // Tab A // VOICES Layout (2 columns x 6 rows = 12 voices)
-    if (activeDrawerTab == 0)
-    {
-        tabAHeaderLabel.setBounds(22, 584, 816, 16);
-        for (int v = 0; v < BreachResonatorAudioProcessor::kMaxVoices; ++v)
-        {
-            const int col = v / 6;
-            const int r   = v % 6;
-            const int bx  = 20 + col * 414;
-            const int by  = 603 + r * 20;
-
-            auto& row = voiceRows[static_cast<size_t>(v)];
-            row.title.setBounds(bx, by, 28, 18);
-            row.level.setBounds(bx + 32,  by, 90, 18);
-            row.pan.setBounds(bx + 126,   by, 90, 18);
-            row.detune.setBounds(bx + 220, by, 90, 18);
-            row.decay.setBounds(bx + 314,  by, 90, 18);
-        }
-    }
+    eqPanel.setBounds(26, 612, 972, 132);
+    voicePanel.setBounds(30, 612, 964, 134);
+    modRoutePanel.setBounds(532, 611, 462, 135);
 
     // Tab B // RESONATOR Layout
     if (activeDrawerTab == 1)
     {
         resTopologyBox.setBounds(18, 588, 165, 24);
+        smearRevisionBtn.setBounds(200, 588, 150, 24);
+        ringTimeBtn.setBounds(365, 588, 148, 24);
+        smearInfo.setBounds(528, 588, 298, 24);
 
         auto placeDrawerKnob = [](juce::Slider& s, juce::Label& l, int x, int y)
         {
@@ -901,21 +850,6 @@ void BreachResonatorAudioProcessorEditor::resized()
         placeModKnob(envRelSlider,    envRelLbl,    318, 658);
         placeModKnob(envAmtSlider,    envAmtLbl,    374, 658);
 
-        // 3x6 Modulation Matrix on the right (x: 438..840)
-        const int matStartX = 476;
-        const int colW = 60;
-        for (int c = 0; c < 6; ++c)
-            matrixColLabels[static_cast<size_t>(c)].setBounds(matStartX + c * colW, 588, colW - 4, 15);
-
-        for (int r = 0; r < 3; ++r)
-        {
-            const int ry = 612 + r * 38;
-            matrixRowLabels[static_cast<size_t>(r)].setBounds(434, ry + 2, 38, 18);
-            for (int c = 0; c < 6; ++c)
-            {
-                matrixSliders[static_cast<size_t>(r * 6 + c)].setBounds(matStartX + c * colW, ry, colW - 6, 22);
-            }
-        }
     }
 
     // Tab D // GLOBAL Layout
@@ -931,14 +865,63 @@ void BreachResonatorAudioProcessorEditor::resized()
         placeGlobalKnob(outGainSlider, outGainLbl, 154, 604);
         placeGlobalKnob(widthSlider,   widthLbl,   280, 604);
 
+        balanceRevisionBtn.setBounds(410, 584, 256, 22);
         mixCurveLbl.setBounds(410, 608, 126, 16);
         mixCurveBox.setBounds(410, 628, 126, 26);
 
         oversampleLbl.setBounds(550, 608, 116, 16);
         oversampleBox.setBounds(550, 628, 116, 26);
 
-        limiterBtn.setBounds(410, 668, 256, 28);
+        limiterBtn.setBounds(410, 663, 124, 24);
+        modalRevisionBtn.setBounds(542, 663, 124, 24);
+        spatialRevisionBtn.setBounds(410, 693, 124, 24);
+        nonlinearRevisionBtn.setBounds(542, 693, 124, 24);
+        stringRevisionBtn.setBounds(410, 720, 124, 18);
+        formantRevisionBtn.setBounds(542, 720, 124, 18);
 
         placeGlobalKnob(smoothSlider, smoothLbl, 696, 604);
     }
+    if (activeDrawerTab == 4)
+    {
+        ottEnableBtn.setBounds(28, 611, 108, 25);
+        ottHeader.setBounds(150, 611, 380, 25);
+        ottSetupBtn.setBounds(882, 611, 111, 25);
+        ottModelBtn.setBounds(706, 611, 160, 25);
+        ottMeters.setBounds(550, 638, 443, 103);
+        const int knobX[] = { 28, 138, 237, 336, 552, 435, 700, 848 };
+        const int knobW[] = { 104, 92, 92, 92, 140, 101, 140, 140 };
+        for (std::size_t i = 0; i < ottSliders.size(); ++i)
+        {
+            ottLabels[i].setBounds(knobX[i], 642, knobW[i], 17);
+            ottSliders[i].setBounds(knobX[i], 660, knobW[i], i == 0 ? 86 : 78);
+        }
+    }
+    if(activeDrawerTab==5)
+    {
+        reverbEnableBtn.setBounds(30,610,110,25);reverbTypeBox.setBounds(158,610,158,25);
+        reverbHeader.setBounds(340,610,650,25);
+        for(size_t i=0;i<6;++i)
+        {
+            const int x=34+static_cast<int>(i)*162;
+            reverbLabels[i].setBounds(x,639,130,16);reverbSliders[i].setBounds(x+22,656,86,78);
+        }
+        reverbInfo.setBounds(205,736,760,15);
+    }
+    if (activeDrawerTab > 0 && activeDrawerTab < 4)
+    {
+        for (auto* child : getChildren())
+        {
+            if (!child->isVisible() || child == &modRoutePanel) continue;
+            auto bounds = child->getBounds();
+            if (bounds.getY() >= 584)
+            {
+                bounds.setX(14 + juce::roundToInt((bounds.getX() - 10) * 1.19f));
+                bounds.setWidth(juce::roundToInt(bounds.getWidth() * 1.19f));
+                bounds.setY(608 + juce::roundToInt((bounds.getY() - 584) * 0.89f));
+                bounds.setHeight(juce::roundToInt(bounds.getHeight() * 0.89f));
+                child->setBounds(bounds);
+            }
+        }
+    }
 }
+

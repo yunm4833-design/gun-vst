@@ -1,0 +1,75 @@
+BREACH Output EQ validation
+
+Linux x86_64 Debug, JUCE 8.0.4, C++17. VST3 and Standalone built.
+All 17 CTest tests passed. AddressSanitizer and UndefinedBehaviorSanitizer passed
+for the isolated EQ DSP tests. UI checks cover EQ on/off, node dragging, the
+selected-band inspector, window bounds, both themes, and byte-exact save/restore.
+The 7 previous-stage effect WAVs and source WAV matched PCM data with EQ bypassed.
+The existing APVTS definitions and order matched the pre-edit source. The 41
+new parameters were appended with version hint 2 for AUv2 index ordering.
+The final integration test rechecked the new hint and legacy order. The
+DSP was unchanged from the full regression run. Code/comments/UI ASCII scan passed.
+
+EQ measurements below use the real processor at 48 kHz with the limiter off.
+The two-tone numbers use the fully dry main mix with a 150 Hz EQ cutoff.
+The fully wet measurement uses a 400 Hz, 48 dB/oct cutoff on a pitched resonator.
+Output attenuation is relative to the EQ-bypassed processor in each test.
+
+1x, 12 dB/oct: 40 Hz -22.9837, 1 kHz -0.00218582 dB
+1x, 24 dB/oct: 40 Hz -45.9236, 1 kHz -1.10794e-06 dB
+1x, 48 dB/oct: 40 Hz -91.8472, 1 kHz -1.38892e-08 dB
+2x, 12 dB/oct: 40 Hz -22.9833, 1 kHz -0.00219516 dB
+2x, 24 dB/oct: 40 Hz -45.9229, 1 kHz -1.1919e-06 dB
+2x, 48 dB/oct: 40 Hz -91.8454, 1 kHz -1.47128e-07 dB
+4x, 12 dB/oct: 40 Hz -22.9832, 1 kHz -0.00219739 dB
+4x, 24 dB/oct: 40 Hz -45.9227, 1 kHz -1.12921e-06 dB
+4x, 48 dB/oct: 40 Hz -91.8449, 1 kHz -5.86064e-08 dB
+100% resonator wet, 130.813 Hz: -77.6691 dB
+PASS: real low cut at every slope and OS mode, wet/dry routing, latency, recall and automation
+
+Windows/macOS binaries and actual DAW loading have not been tested in this run.
+GitHub was not updated.
+
+Test project /tmp/breach-build
+      Start 12: BalanceSessionRecall
+      Start 15: DynamicsSessionRecall
+ 1/17 Test #15: DynamicsSessionRecall ............   Passed   19.01 sec
+      Start 14: ReverbDSP
+ 2/17 Test #12: BalanceSessionRecall .............   Passed   21.55 sec
+      Start 10: ModalSessionRecall
+ 3/17 Test #14: ReverbDSP ........................   Passed    7.17 sec
+      Start  8: FormantSessionRecall
+ 4/17 Test  #8: FormantSessionRecall .............   Passed   17.93 sec
+      Start  6: RingsSessionRecall
+ 5/17 Test #10: ModalSessionRecall ...............   Passed   22.64 sec
+      Start  2: SpatialSessionRecall
+ 6/17 Test  #2: SpatialSessionRecall .............   Passed   11.80 sec
+      Start  4: NonlinearSessionRecall
+ 7/17 Test  #6: RingsSessionRecall ...............   Passed   15.05 sec
+      Start  1: SpatialDSP
+ 8/17 Test  #4: NonlinearSessionRecall ...........   Passed   10.65 sec
+      Start 13: DynamicsDSP
+ 9/17 Test #13: DynamicsDSP ......................   Passed    0.41 sec
+      Start  7: FormantDSP
+10/17 Test  #1: SpatialDSP .......................   Passed    8.31 sec
+      Start  3: NonlinearDSP
+11/17 Test  #7: FormantDSP .......................   Passed    0.53 sec
+      Start  9: ModalDSP
+12/17 Test  #9: ModalDSP .........................   Passed    0.14 sec
+      Start  5: RingsDSP
+13/17 Test  #3: NonlinearDSP .....................   Passed    0.28 sec
+      Start 11: BalanceDSP
+14/17 Test #11: BalanceDSP .......................   Passed    0.05 sec
+      Start 16: OutputEqDSP
+15/17 Test  #5: RingsDSP .........................   Passed    0.09 sec
+      Start 17: OutputEqIntegration
+16/17 Test #16: OutputEqDSP ......................   Passed    0.02 sec
+17/17 Test #17: OutputEqIntegration ..............   Passed    5.58 sec
+
+100% tests passed out of 17
+
+Total Test time (real) =  73.41 sec
+
+JUCE v8.0.4
+Fontconfig error: No writable cache directories
+PASS: view navigation, both themes, control bounds, macro edit, EQ gestures and inspector, saved-state preservation and roundtrip

@@ -6,23 +6,28 @@
 #include <atomic>
 #include <vector>
 #include <cmath>
+#include "SpatialDSP.h"
+#include "NonlinearDSP.h"
+#include "RingsStringDSP.h"
+#include "FormantDSP.h"
+#include "ModalDSP.h"
+#include "BalanceDSP.h"
+#include "DynamicsDSP.h"
+#include "ReverbDSP.h"
+#include "OutputEqDSP.h"
+#include "ImpactTelemetry.h"
 
 struct VisualTelemetry
 {
-    std::atomic<float> inputRms { 0.0f };
-    std::atomic<float> outputRms { 0.0f };
-    std::atomic<float> transientImpulse { 0.0f };
-    std::atomic<int>   activeArpVoice { 0 };
-    std::atomic<float> lfo1Value { 0.0f };
-    std::atomic<float> lfo2Value { 0.0f };
-    std::atomic<float> envValue { 0.0f };
-    std::array<std::atomic<float>, 12> voiceEnergies {};
+    breach::impact::Telemetry impact;
+    std::array<std::atomic<float>, 3> ottGainDb {};
 };
 
 class BreachResonatorAudioProcessor : public juce::AudioProcessor
 {
 public:
     static constexpr int kMaxVoices = 12;
+    static_assert(kMaxVoices == breach::impact::voiceCount);
 
     BreachResonatorAudioProcessor();
     ~BreachResonatorAudioProcessor() override = default;
@@ -40,7 +45,7 @@ public:
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 4.0; }
+    double getTailLengthSeconds() const override;
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -51,8 +56,41 @@ public:
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
+    // Version 1 preserves legacy spatial DSP; version 2 enables the upgrade.
+    int getSpatialDspRevision() const noexcept { return spatialDspRevision.load(std::memory_order_acquire); }
+    void setSpatialDspRevision(int revision);
+
+    int getNonlinearDspRevision() const noexcept { return nonlinearDspRevision.load(std::memory_order_acquire); }
+    void setNonlinearDspRevision(int revision);
+
+    int getStringDspRevision() const noexcept { return stringDspRevision.load(std::memory_order_acquire); }
+    void setStringDspRevision(int revision);
+
+    int getFormantDspRevision() const noexcept { return formantDspRevision.load(std::memory_order_acquire); }
+    void setFormantDspRevision(int revision);
+
+    int getModalDspRevision() const noexcept { return modalDspRevision.load(std::memory_order_acquire); }
+    void setModalDspRevision(int revision);
+
+    int getBalanceRevision() const noexcept { return balanceRevision.load(std::memory_order_acquire); }
+    void setBalanceRevision(int revision);
+    bool usesRingTime() const noexcept { return ringTimeEnabled.load(std::memory_order_relaxed); }
+    void setRingTimeEnabled(bool enabled);
+    double nominalRingSeconds(float decay) const noexcept;
+
+    int getSmearDspRevision() const noexcept { return smearDspRevision.load(std::memory_order_acquire); }
+    bool isShortSmearEnabled() const noexcept { return getSmearDspRevision() >= 2 && getSpatialDspRevision() >= 2; }
+    void setSmearDspRevision(int revision);
+
+    bool usesFaustOtt() const noexcept { return faustOttEnabled.load(std::memory_order_relaxed); }
+    void setFaustOttEnabled(bool enabled);
+
     void triggerPanicReset();
     void applyChordPreset(int presetIndex);
+
+    static juce::String outputEqBandId(std::size_t band, const char* suffix);
+    breach::eq::BandSettings readOutputEqBand(std::size_t band) const noexcept;
+    breach::eq::Rates getOutputEqRates() const noexcept;
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     juce::AudioProcessorValueTreeState apvts;
@@ -74,7 +112,6 @@ private:
         // Per-voice envelope & smoothed frequency
         float attackEnv = 0.0f;
         float currentFreq = 220.0f;
-        float energyMetric = 0.0f;
 
         void reset()
         {
@@ -85,10 +122,10 @@ private:
             combLpState = 0.0f;
             allpassState = 0.0f;
             attackEnv = 0.0f;
-            energyMetric = 0.0f;
         }
     };
 
+    // Legacy implementations are retained verbatim for old session recall.
     struct SchroederAllpass
     {
         std::vector<float> buffer;
@@ -178,13 +215,66 @@ private:
     std::array<SchroederAllpass, 2> diffuserL;
     std::array<SchroederAllpass, 2> diffuserR;
     HilbertShifter hilbertL, hilbertR;
+    std::atomic<bool> ringTimeEnabled { true };
+    bool ringTimeWasActive = false;
+    double ringSmoothRate = 0, ringSmoothTime = 0;
+    struct VoiceMacroGlide
+    {
+        juce::SmoothedValue<float> pitchRatio, left, right;
+    };
+    std::array<VoiceMacroGlide, kMaxVoices> voiceMacroGlides;
+    double voiceMacroSampleRate = 0;
+    bool macrosWereActive = false;
+    std::atomic<int> balanceRevision { 2 };
+    std::atomic<bool> balanceResetRequested { false };
+    breach::balance::SniperBank balancedSniper;
+    breach::dynamics::Engine dynamicsEngine;
+    std::atomic<bool> faustOttEnabled { true };
+    breach::reverb::Engine reverbEngine;
+    breach::eq::Engine outputEq;
+    struct EqBandParameters
+    {
+        const std::atomic<float>* enabled;
+        const std::atomic<float>* shape;
+        const std::atomic<float>* frequency;
+        const std::atomic<float>* gain;
+        const std::atomic<float>* q;
+    };
+    std::array<EqBandParameters, breach::eq::bandCount> outputEqParameters {};
+    const std::atomic<float>* outputEqEnabled = nullptr;
+    const std::atomic<float>* oversamplingParameter = nullptr;
+    std::atomic<float> outputEqBaseRate { 48000 };
+    std::atomic<int> smearDspRevision { 2 };
+    std::atomic<bool> ancillaryResetRequested { false };
+    bool balanceWasActive = false, balancedSniperWasActive = false;
+    double balancedSmoothRate = 0.0, balancedSmoothTime = -1.0;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smExcDrive, smWetTrim;
+    breach::modal::Bank modalBank;
+    std::atomic<int> modalDspRevision { 2 };
+    std::atomic<bool> modalResetRequested { false };
+    bool modalWasActive = false;
+    breach::formant::Bank formantBank;
+    std::atomic<int> formantDspRevision { 2 };
+    std::atomic<bool> formantResetRequested { false };
+    bool formantWasActive = false;
+    breach::physical::Bank stringBank;
+    std::atomic<int> stringDspRevision { 2 };
+    std::atomic<bool> stringResetRequested { false };
+    bool stringWasActive = false;
+    breach::spatial::SpatialEngine spatialEngine;
+    std::atomic<int> spatialDspRevision { 2 };
+    std::atomic<int> nonlinearDspRevision { 2 };
+    std::unique_ptr<breach::nonlinear::Engine> nonlinearEngine;
+    bool nonlinearProcessingEnabled = false;
+    int nonlinearProcessingChoice = -1;
+    void configureNonlinearProcessing(int osChoice, bool enabled);
+    void refreshNonlinearLatency();
+    std::array<std::atomic<int>, 3> nonlinearLatencies {{2, 2, 2}};
+    float spatialRevisionBlend = 1.0f;
     float tiltLpL = 0.0f, tiltLpR = 0.0f;
 
-    // Transient & envelope follower
-    float envFast = 0.0f;
-    float envSlow = 0.0f;
+    breach::impact::Analysis impactAnalysis;
     float modEnvState = 0.0f;
-    float transientHold = 0.0f;
 
     // LFO & Arpeggiator state
     float lfo1Phase = 0.0f;
@@ -218,6 +308,8 @@ private:
     // Oversampling engines (2x and 4x)
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler2x;
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler4x;
+
+    std::unique_ptr<juce::dsp::Oversampling<float>> nonlinearOversampler2x, nonlinearOversampler4x;
 
     void processCoreBlock(juce::dsp::AudioBlock<float>& block, double effectiveSampleRate, double hostBpm);
 

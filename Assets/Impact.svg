@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="674" height="316" viewBox="0 0 674 316">
+  <g fill="none" stroke="#000000" stroke-linecap="round" stroke-linejoin="round">
+    <path opacity=".32" stroke-width="1.2" d="M 600 -2 L 601 58 L 598 112 L 602 171 L 599 220 L 602 272 L 600 318"/>
+    <path opacity=".26" stroke-width=".9" d="M 463 -2 L 455 17 L 460 25 L 445 53 M 524 20 L 513 35 L 502 38 L 494 48 M 601 70 L 571 75 L 562 70 L 546 75 L 531 74 M 601 252 L 579 249 L 567 260 L 550 262 L 535 279 M 470 318 L 482 299 L 486 283 L 497 276 M 308 318 L 324 296 L 336 293 L 341 282 M 596 133 L 585 138 L 580 146"/>
+    <path opacity=".31" stroke-width=".75" d="M 442 15 l 8 -12 m -4 13 l 8 -11 m 16 -3 l -13 19 m 43 15 l 8 -12 m -3 12 l 9 -12 m -2 9 l 8 -12 m 31 53 l 8 -8 m 0 7 l 7 -8 m 0 7 l 7 -8 m 1 8 l 7 -8 m -44 210 l 12 -14 m -7 13 l 12 -14 m -7 12 l 11 -13 m 4 4 l 8 -11 m -42 25 l -8 8 m -82 35 l 11 -14 m -7 15 l 11 -14 m -7 15 l 11 -15 m -147 9 l 10 -15 m -6 14 l 10 -15 m -6 14 l 10 -15"/>
+    <path opacity=".36" stroke-width=".65" d="M 581 181 l -6 3 l -5 -2 l 5 -3 Z M 494 114 l -5 5 l -4 -2 l 5 -4 Z M 456 215 l 6 4 l 3 -2 l -5 -4 Z M 357 258 l 5 -5 l -4 -3 l -4 5 Z M 547 210 l -8 2 m -32 84 l -8 6 m 51 -199 l 6 2 m -42 51 l -7 3 m 78 113 l -4 7 m -83 -209 l 5 -4 m -103 10 l 4 6 m -83 -24 l 3 6 m -6 171 l -6 3"/>
+    <path opacity=".42" stroke-width=".65" d="M 396 153 l 7 -8 l 8 2 l 9 -3 l 8 7 l -3 7 l 5 5 l -9 7 l -9 -1 l -6 6 l -9 -6 l -7 -2 l 4 -8 Z"/>
+    <path opacity=".29" stroke-width=".8" d="M 393 158 l 12 -8 m -10 18 l 21 -17 m -15 20 l 19 -16 m -13 19 l 17 -15 m -5 10 l 7 -5"/>
+  </g>
+</svg>

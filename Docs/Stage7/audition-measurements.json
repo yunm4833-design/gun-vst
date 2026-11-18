@@ -1,0 +1,42 @@
+{
+  "00-input.wav": {
+    "peak_dbfs": -0.6507134326273707,
+    "rms_dbfs": -32.12258796081499,
+    "tail_3_to_8s_rms_dbfs": -200.0
+  },
+  "01-smear-focused.wav": {
+    "peak_dbfs": -5.333842333200831,
+    "rms_dbfs": -28.943586083261227,
+    "tail_3_to_8s_rms_dbfs": -200.0
+  },
+  "02-smear-blurred.wav": {
+    "peak_dbfs": -6.582972645294887,
+    "rms_dbfs": -29.418313020464993,
+    "tail_3_to_8s_rms_dbfs": -200.0
+  },
+  "03-ott-input.wav": {
+    "peak_dbfs": -5.651043023488701,
+    "rms_dbfs": -29.64823592589999,
+    "tail_3_to_8s_rms_dbfs": -200.0
+  },
+  "04-hall.wav": {
+    "peak_dbfs": -7.7733744893381775,
+    "rms_dbfs": -32.64973996573841,
+    "tail_3_to_8s_rms_dbfs": -73.36632507934755
+  },
+  "05-plate.wav": {
+    "peak_dbfs": -7.7733744893381775,
+    "rms_dbfs": -30.97517332957821,
+    "tail_3_to_8s_rms_dbfs": -63.884481233150304
+  },
+  "06-space.wav": {
+    "peak_dbfs": -7.7733744893381775,
+    "rms_dbfs": -35.137496788408896,
+    "tail_3_to_8s_rms_dbfs": -69.48565014667125
+  },
+  "07-shimmer.wav": {
+    "peak_dbfs": -7.7733744893381775,
+    "rms_dbfs": -35.99776452331474,
+    "tail_3_to_8s_rms_dbfs": -72.30357684257709
+  }
+}

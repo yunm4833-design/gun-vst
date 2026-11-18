@@ -1,0 +1,73 @@
+BREACH stage 6 - local validation
+
+GitHub repository: untouched. No push, PR, release, CI run or remote edit.
+Plugin version and APVTS layout: unchanged (1.1.2 staged cumulative upgrade).
+Code/comment/UI ASCII scan: PASS. No additional external library introduced.
+APVTS layout SHA256: c4697173337af06bb57cea5ef87923c82f03ffd87c648199c1a3bd94e967fa2d
+Source/PluginParameters.h and Source/ChordVoicingEngine.h: byte-identical to stage 5.
+
+Build environment: Linux x86_64, JUCE 8.0.4, C++17, CMake Debug.
+Standalone and VST3: built successfully.
+All CTest targets: 12/12 PASS, final run 59.40 seconds.
+Balance unit: progressive curves, fractional density/power, trim bounds,
+SNIPER RT60 at 32/44.1/48/96 kHz, normalized peak gain, silence: PASS.
+ASan + UBSan + leak checking on BalanceDSP unit executable: PASS.
+UI smoke: themes/tabs/bounds/macro editing/state recall/LEVELS toggle: PASS.
+Final D // GLOBAL screenshot visually checked: LEVELS control fits without overlap.
+
+Stage 5 session fixtures: six cases, maximum sample error 0.
+LEVELS: LEGACY vs independent stage 5 renders: 36 files, maximum sample error 0.
+Balanced current state/audio roundtrip for five modes: PASS.
+Automation at 64/256/1024 sample buffers, five modes, 1x/2x/4x:
+maximum sample error 0 for tested aligned event schedules.
+DENSITY continuity across adjacent 0.499/0.501 parameter values: PASS.
+MIX=0 dry gain and existing 2-sample nonlinear alignment: PASS.
+Silence through automation: exact zero for five modes and three OS settings.
+Final cached DSP renders vs calibration/A-B render set: 36 files, max error 0.
+
+Measurement limitations:
+- Synthetic input proxies, not real recordings or listening-panel scores.
+- K-weighted gated offline estimates; not a certified LUFS meter.
+- Fixed gains calibrated on four inputs, with two independent holdouts.
+- Median five-mode spread 17.25 -> 3.38 dB across six inputs.
+- Out-of-chord transposed-pad holdout still has 19.69 dB spread (before 22.18).
+- No adaptive gain, noise gate or individually normalized A/B files.
+- Low-density processing now keeps all available voices live; higher CPU cost.
+- No Release real-time CPU budget, Windows/macOS/AU build or actual DAW run tested.
+
+Test project /tmp/breach-build
+      Start  1: SpatialDSP
+ 1/12 Test  #1: SpatialDSP .......................   Passed    5.56 sec
+      Start  2: SpatialSessionRecall
+ 2/12 Test  #2: SpatialSessionRecall .............   Passed    6.26 sec
+      Start  3: NonlinearDSP
+ 3/12 Test  #3: NonlinearDSP .....................   Passed    0.15 sec
+      Start  4: NonlinearSessionRecall
+ 4/12 Test  #4: NonlinearSessionRecall ...........   Passed    5.08 sec
+      Start  5: RingsDSP
+ 5/12 Test  #5: RingsDSP .........................   Passed    0.03 sec
+      Start  6: RingsSessionRecall
+ 6/12 Test  #6: RingsSessionRecall ...............   Passed    7.75 sec
+      Start  7: FormantDSP
+ 7/12 Test  #7: FormantDSP .......................   Passed    0.23 sec
+      Start  8: FormantSessionRecall
+ 8/12 Test  #8: FormantSessionRecall .............   Passed    9.58 sec
+      Start  9: ModalDSP
+ 9/12 Test  #9: ModalDSP .........................   Passed    0.05 sec
+      Start 10: ModalSessionRecall
+10/12 Test #10: ModalSessionRecall ...............   Passed   12.88 sec
+      Start 11: BalanceDSP
+11/12 Test #11: BalanceDSP .......................   Passed    0.02 sec
+      Start 12: BalanceSessionRecall
+12/12 Test #12: BalanceSessionRecall .............   Passed   11.79 sec
+
+100% tests passed out of 12
+
+Total Test time (real) =  59.40 sec
+
+JUCE v8.0.4
+Fontconfig error: No writable cache directories
+PASS: view navigation, both themes, control bounds, macro edit, saved-state preservation and roundtrip
+
+PASS: progressive curves, continuous density, fixed trims, SNIPER normalized gain/RT60/silence
+

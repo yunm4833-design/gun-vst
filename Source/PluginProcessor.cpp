@@ -26,10 +26,42 @@ BreachResonatorAudioProcessor::BreachResonatorAudioProcessor()
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
+    outputEqEnabled = apvts.getRawParameterValue("outputEqEnable");
+    oversamplingParameter = apvts.getRawParameterValue("oversampling");
+    for (std::size_t band = 0; band < outputEqParameters.size(); ++band)
+    {
+        auto raw = [&](const char* suffix) { return apvts.getRawParameterValue(outputEqBandId(band, suffix)); };
+        outputEqParameters[band] = {raw("Enable"), raw("Type"), raw("Freq"), raw("Gain"), raw("Q")};
+    }
+    nonlinearEngine = std::make_unique<breach::nonlinear::Engine>();
+    nonlinearOversampler2x = std::make_unique<juce::dsp::Oversampling<float>>(
+        2, 1, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, true);
+    nonlinearOversampler4x = std::make_unique<juce::dsp::Oversampling<float>>(
+        2, 2, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, true);
     oversampler2x = std::make_unique<juce::dsp::Oversampling<float>>(
         2, 1, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true);
     oversampler4x = std::make_unique<juce::dsp::Oversampling<float>>(
         2, 2, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true);
+}
+
+juce::String BreachResonatorAudioProcessor::outputEqBandId(std::size_t band, const char* suffix)
+{
+    return "outputEq" + juce::String(static_cast<int>(band + 1)) + suffix;
+}
+
+breach::eq::BandSettings BreachResonatorAudioProcessor::readOutputEqBand(std::size_t band) const noexcept
+{
+    const auto& p = outputEqParameters[band];
+    auto load = [](const auto* parameter) { return parameter->load(std::memory_order_relaxed); };
+    return {load(p.enabled) > .5f, static_cast<breach::eq::Shape>(static_cast<int>(load(p.shape))),
+            load(p.frequency), load(p.gain), load(p.q)};
+}
+
+breach::eq::Rates BreachResonatorAudioProcessor::getOutputEqRates() const noexcept
+{
+    const double base = outputEqBaseRate.load(std::memory_order_relaxed);
+    const int choice = static_cast<int>(oversamplingParameter->load(std::memory_order_relaxed));
+    return {base, base * (1 << juce::jlimit(0, 2, choice))};
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout BreachResonatorAudioProcessor::createParameterLayout()
@@ -218,15 +250,99 @@ juce::AudioProcessorValueTreeState::ParameterLayout BreachResonatorAudioProcesso
         juce::ParameterID("paramSmoothMs", 1), "Smooth (ms)",
         juce::NormalisableRange<float>(2.0f, 100.0f, 0.5f), 15.0f));
 
+    // Append-only parameters: existing IDs, order, ranges and defaults stay intact.
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID("ottEnable", 1), "OTT Enable", false));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("ottDepth", 1), "OTT Depth", juce::NormalisableRange<float>(0, 1, .001f), .35f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("ottTime", 1), "OTT Time (%)", juce::NormalisableRange<float>(10, 400, 1, .5f), 100));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("ottUp", 1), "OTT Upward", juce::NormalisableRange<float>(0, 1, .001f), .5f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("ottDown", 1), "OTT Downward", juce::NormalisableRange<float>(0, 1, .001f), .5f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("ottInGain", 1), "OTT In Gain (dB)", juce::NormalisableRange<float>(-18, 18, .1f), 0));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("ottOutGain", 1), "OTT Out Gain (dB)", juce::NormalisableRange<float>(-18, 18, .1f), 0));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("ottLowSplit", 1), "OTT Low Split (Hz)", juce::NormalisableRange<float>(40, 400, 1, .5f), 120));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("ottHighSplit", 1), "OTT High Split (Hz)", juce::NormalisableRange<float>(1000, 8000, 1, .5f), 2500));
+
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID("reverbEnable", 1), "Reverb Enable", false));
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("reverbType", 1), "Reverb Type", juce::StringArray{"HALL", "PLATE", "SPACE", "SHIMMER"}, 0));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("reverbMix", 1), "Reverb Mix", juce::NormalisableRange<float>(0,1,.001f), .18f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("reverbDecay", 1), "Reverb Decay (s)", juce::NormalisableRange<float>(.2f,8,.01f,.5f), 2));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("reverbPreDelay", 1), "Reverb Predelay (ms)", juce::NormalisableRange<float>(0,200,.1f), 20));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("reverbDamping", 1), "Reverb Damping", juce::NormalisableRange<float>(0,1,.001f), .5f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("reverbWidth", 1), "Reverb Width", juce::NormalisableRange<float>(0,2,.01f), 1));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("reverbShimmer", 1), "Reverb Shimmer", juce::NormalisableRange<float>(0,1,.001f), .5f));
+
+    // Output EQ parameters are appended after all previous host parameters.
+    // AUv2 orders parameters by version hint, then by identifier hash.
+    constexpr int outputEqVersion = 2;
+    params.push_back(std::make_unique<juce::AudioParameterBool>(juce::ParameterID("outputEqEnable", outputEqVersion), "Output EQ Enable", false));
+    juce::StringArray filterTypes;
+    for (const auto* name : breach::eq::shapeNames) filterTypes.add(name);
+    constexpr std::array<float, breach::eq::bandCount> frequencies {{80, 150, 300, 600, 1200, 2500, 5000, 12000}};
+    constexpr std::array<breach::eq::Shape, breach::eq::bandCount> shapes {{
+        breach::eq::Shape::lowCut24, breach::eq::Shape::lowShelf, breach::eq::Shape::bell, breach::eq::Shape::bell,
+        breach::eq::Shape::bell, breach::eq::Shape::bell, breach::eq::Shape::highShelf, breach::eq::Shape::highCut12
+    }};
+    for (std::size_t band = 0; band < frequencies.size(); ++band)
+    {
+        const juce::String name = "Output EQ " + juce::String(static_cast<int>(band + 1)) + " ";
+        auto id = [band](const char* suffix) { return juce::ParameterID(outputEqBandId(band, suffix), outputEqVersion); };
+        juce::NormalisableRange<float> frequencyRange(
+            static_cast<float>(breach::eq::minHz), static_cast<float>(breach::eq::maxHz),
+            [](float lo, float hi, float value) { return lo * std::pow(hi / lo, value); },
+            [](float lo, float hi, float hz) { return std::log(hz / lo) / std::log(hi / lo); },
+            [](float lo, float hi, float hz) { return std::clamp(std::round(hz * 10) / 10, lo, hi); });
+        params.push_back(std::make_unique<juce::AudioParameterBool>(id("Enable"), name + "Enable", band == 0));
+        params.push_back(std::make_unique<juce::AudioParameterChoice>(id("Type"), name + "Type", filterTypes, static_cast<int>(shapes[band])));
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(id("Freq"), name + "Frequency (Hz)", frequencyRange, frequencies[band],
+            juce::AudioParameterFloatAttributes().withStringFromValueFunction([](float hz, int)
+            { return juce::String(hz, hz < 100 ? 1 : 0); })));
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(id("Gain"), name + "Gain (dB)", juce::NormalisableRange<float>(-18, 18, .01f), 0));
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(id("Q"), name + "Q", juce::NormalisableRange<float>(.25f, 8, 0, .35f), static_cast<float>(breach::eq::neutralQ),
+            juce::AudioParameterFloatAttributes().withStringFromValueFunction([](float q, int)
+            { return juce::String(q, 3); })));
+    }
+
+    // Version 3 keeps the new voice macros after the version 2 EQ in AUv2.
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("voiceTuneSpread", 3), "Tune Spread (cents)", juce::NormalisableRange<float>(0, 20, .1f), 0));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("voicePanSpread", 3), "Pan Spread (%)", juce::NormalisableRange<float>(0, 100, 1), 0));
+
     return { params.begin(), params.end() };
 }
 
 void BreachResonatorAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = juce::jmax(8000.0, sampleRate);
+    outputEqBaseRate.store(static_cast<float>(currentSampleRate), std::memory_order_relaxed);
+    outputEq.reset();
 
     oversampler2x->initProcessing(static_cast<size_t>(samplesPerBlock));
     oversampler4x->initProcessing(static_cast<size_t>(samplesPerBlock));
+
+    nonlinearOversampler2x->initProcessing(static_cast<size_t>(samplesPerBlock));
+    nonlinearOversampler4x->initProcessing(static_cast<size_t>(samplesPerBlock));
+    nonlinearLatencies[0].store(2);
+    nonlinearLatencies[1].store(2 + juce::roundToInt(nonlinearOversampler2x->getLatencyInSamples()));
+    nonlinearLatencies[2].store(2 + juce::roundToInt(nonlinearOversampler4x->getLatencyInSamples()));
+    nonlinearProcessingChoice = -1;
+    configureNonlinearProcessing(juce::jlimit(0, 2, static_cast<int>(apvts.getRawParameterValue("oversampling")->load())), getNonlinearDspRevision() >= 2);
 
     const int maxCombSamples = static_cast<int>(currentSampleRate * 4.0 / 20.0) + 64;
     for (int v = 0; v < kMaxVoices; ++v)
@@ -244,10 +360,28 @@ void BreachResonatorAudioProcessor::prepareToPlay(double sampleRate, int samples
 
     hilbertL.reset();
     hilbertR.reset();
+    dynamicsEngine.prepare(currentSampleRate);
+    reverbEngine.prepare(currentSampleRate);
+    balanceWasActive = balancedSniperWasActive = false;
+    ringTimeWasActive = false;
+    ringSmoothRate = 0;
+    voiceMacroSampleRate = 0;
+    macrosWereActive = false;
+    balancedSmoothRate = 0.0; balancedSmoothTime = -1.0;
+    balancedSniper.selectRate(currentSampleRate); balancedSniper.reset();
+    modalBank.prepare(currentSampleRate);
+    modalWasActive = false;
+    formantBank.prepare(currentSampleRate);
+    formantWasActive = false;
+    stringBank.prepare(currentSampleRate * 4.0);
+    stringWasActive = false;
+    spatialEngine.prepare(currentSampleRate);
+    spatialRevisionBlend = getSpatialDspRevision() >= 2 ? 1.0f : 0.0f;
     excHpfStateL = excHpfStateR = 0.0f;
     excPrevInL = excPrevInR = 0.0f;
     tiltLpL = tiltLpR = 0.0f;
-    envFast = envSlow = modEnvState = transientHold = 0.0f;
+    modEnvState = 0.0f;
+    impactAnalysis.reset(telemetry.impact);
 
     const double smoothSec = 0.015;
     smDrive.reset(currentSampleRate, smoothSec);
@@ -263,8 +397,19 @@ void BreachResonatorAudioProcessor::prepareToPlay(double sampleRate, int samples
 
 void BreachResonatorAudioProcessor::releaseResources()
 {
+    impactAnalysis.reset(telemetry.impact);
     oversampler2x->reset();
     oversampler4x->reset();
+    nonlinearOversampler2x->reset();
+    nonlinearOversampler4x->reset();
+    nonlinearEngine->reset();
+    stringBank.reset();
+    formantBank.reset();
+    modalBank.reset();
+    balancedSniper.reset();
+    dynamicsEngine.reset();
+    reverbEngine.reset();
+    outputEq.reset();
 }
 
 bool BreachResonatorAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -370,7 +515,7 @@ void BreachResonatorAudioProcessor::processBlock(juce::AudioBuffer<float>& buffe
     juce::ScopedNoDenormals noDenormals;
 
     const int numSamples = buffer.getNumSamples();
-    if (numSamples <= 0)
+    if (numSamples <= 0 || buffer.getNumChannels() <= 0)
         return;
 
     if (buffer.getNumChannels() == 1)
@@ -380,6 +525,7 @@ void BreachResonatorAudioProcessor::processBlock(juce::AudioBuffer<float>& buffe
 
     if (panicRequested.exchange(false, std::memory_order_acquire))
     {
+        impactAnalysis.reset(telemetry.impact);
         for (int v = 0; v < kMaxVoices; ++v)
         {
             voicesL[static_cast<size_t>(v)].reset();
@@ -391,6 +537,21 @@ void BreachResonatorAudioProcessor::processBlock(juce::AudioBuffer<float>& buffe
         diffuserR[1].reset();
         hilbertL.reset();
         hilbertR.reset();
+        spatialEngine.reset();
+        stringBank.reset();
+        formantBank.reset();
+        modalBank.reset();
+        balancedSniper.reset();
+        dynamicsEngine.reset();
+        reverbEngine.reset();
+        outputEq.reset();
+        nonlinearEngine->reset();
+    }
+
+    if (ancillaryResetRequested.exchange(false, std::memory_order_acquire))
+    {
+        dynamicsEngine.reset(); reverbEngine.reset(); outputEq.reset();
+        voiceMacroSampleRate = 0;
     }
 
     // Track incoming MIDI notes
@@ -416,25 +577,63 @@ void BreachResonatorAudioProcessor::processBlock(juce::AudioBuffer<float>& buffe
         }
     }
 
+    // Match the external chain: OTT-style input dynamics before BREACH gain,
+    // excitation and the dry/wet split. Run at base rate, independently of OS.
+    breach::dynamics::Controls dynamics;
+    dynamics.useFaust = usesFaustOtt();
+    dynamics.enabled = apvts.getRawParameterValue("ottEnable")->load() > .5f;
+    dynamics.depth = apvts.getRawParameterValue("ottDepth")->load();
+    dynamics.timePercent = apvts.getRawParameterValue("ottTime")->load();
+    dynamics.upward = apvts.getRawParameterValue("ottUp")->load();
+    dynamics.downward = apvts.getRawParameterValue("ottDown")->load();
+    dynamics.inputDb = apvts.getRawParameterValue("ottInGain")->load();
+    dynamics.outputDb = apvts.getRawParameterValue("ottOutGain")->load();
+    dynamics.lowHz = apvts.getRawParameterValue("ottLowSplit")->load();
+    dynamics.highHz = apvts.getRawParameterValue("ottHighSplit")->load();
+    dynamicsEngine.setControls(dynamics);
+    if (!dynamicsEngine.idle())
+    {
+        auto* left = buffer.getWritePointer(0);
+        auto* right = buffer.getWritePointer(buffer.getNumChannels() > 1 ? 1 : 0);
+        for (int n = 0; n < numSamples; ++n)
+        {
+            const auto out = dynamicsEngine.process({left[n], right[n]});
+            left[n] = out.left; right[n] = out.right;
+        }
+    }
+    for (size_t b = 0; b < 3; ++b)
+        telemetry.ottGainDb[b].store(dynamicsEngine.idle() ? 0.0f : dynamicsEngine.gainMeters()[b], std::memory_order_relaxed);
+
     const int osChoice = juce::jlimit(0, 2, static_cast<int>(apvts.getRawParameterValue("oversampling")->load()));
+    configureNonlinearProcessing(osChoice, getNonlinearDspRevision() >= 2);
+    spatialEngine.selectRate(osChoice);
+    reverbEngine.selectRate(osChoice);
     juce::dsp::AudioBlock<float> baseBlock(buffer);
 
     if (osChoice == 1)
     {
-        auto osBlock = oversampler2x->processSamplesUp(baseBlock);
+        auto* engine = nonlinearProcessingEnabled ? nonlinearOversampler2x.get() : oversampler2x.get();
+        auto osBlock = engine->processSamplesUp(baseBlock);
         processCoreBlock(osBlock, currentSampleRate * 2.0, hostBpm);
-        oversampler2x->processSamplesDown(baseBlock);
+        engine->processSamplesDown(baseBlock);
     }
     else if (osChoice == 2)
     {
-        auto osBlock = oversampler4x->processSamplesUp(baseBlock);
+        auto* engine = nonlinearProcessingEnabled ? nonlinearOversampler4x.get() : oversampler4x.get();
+        auto osBlock = engine->processSamplesUp(baseBlock);
         processCoreBlock(osBlock, currentSampleRate * 4.0, hostBpm);
-        oversampler4x->processSamplesDown(baseBlock);
+        engine->processSamplesDown(baseBlock);
     }
     else
     {
         processCoreBlock(baseBlock, currentSampleRate, hostBpm);
     }
+    // Sample the delivered signal after the oversampler and all post effects.
+    const auto* left = buffer.getReadPointer(0);
+    const auto* right = buffer.getReadPointer(buffer.getNumChannels() > 1 ? 1 : 0);
+    for (int sample = 0; sample < numSamples; ++sample)
+        impactAnalysis.observeOutput(left[sample], right[sample]);
+    impactAnalysis.publishOutput(telemetry.impact);
 }
 
 void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float>& block, double sr, double hostBpm)
@@ -447,17 +646,78 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
     float* chL = block.getChannelPointer(0);
     float* chR = (numChannels > 1) ? block.getChannelPointer(1) : chL;
 
+    impactAnalysis.setRates(sr, currentSampleRate);
+    const bool shortSmear = isShortSmearEnabled();
+    const float spatialTarget = getSpatialDspRevision() >= 2 ? 1.0f : 0.0f;
+    const float spatialBlendStep = static_cast<float>(1.0 / (0.02 * sr));
+
+    const bool balanced = getBalanceRevision() >= 2;
+    const bool physicalRing = usesRingTime();
+    const bool ringChanged = physicalRing != ringTimeWasActive;
+    ringTimeWasActive = physicalRing;
+    if (ringChanged)
+    {
+        modalBank.reset();
+        formantBank.reset();
+        stringBank.reset();
+        balancedSniper.reset();
+    }
+    const float requestedSmooth = apvts.getRawParameterValue("paramSmoothMs")->load() * 0.001f;
+    if (balanced)
+    {
+        const bool changed = !balanceWasActive || balancedSmoothRate != sr || balancedSmoothTime != requestedSmooth;
+        if (changed)
+        {
+            auto configure = [&](auto& smooth, float value)
+            {
+                const float current = balanceWasActive ? smooth.getCurrentValue() : value;
+                smooth.reset(sr, requestedSmooth); smooth.setCurrentAndTargetValue(current);
+            };
+            configure(smDrive, apvts.getRawParameterValue("drive")->load());
+            configure(smSpace, apvts.getRawParameterValue("space")->load());
+            configure(smDecay, apvts.getRawParameterValue("decay")->load());
+            configure(smTone, apvts.getRawParameterValue("tone")->load());
+            configure(smDensity, apvts.getRawParameterValue("density")->load());
+            configure(smMix, apvts.getRawParameterValue("mix")->load());
+            configure(smInGain, juce::Decibels::decibelsToGain(apvts.getRawParameterValue("inGain")->load()));
+            configure(smOutGain, juce::Decibels::decibelsToGain(apvts.getRawParameterValue("outGain")->load()));
+            configure(smWidth, apvts.getRawParameterValue("stereoWidth")->load() * .01f);
+            configure(smExcDrive, apvts.getRawParameterValue("excDrive")->load());
+            const float trimCurrent = balanceWasActive ? smWetTrim.getCurrentValue() : 1.0f;
+            smWetTrim.reset(sr, .03); smWetTrim.setCurrentAndTargetValue(trimCurrent);
+            balancedSmoothRate = sr; balancedSmoothTime = requestedSmooth;
+        }
+    }
+    else
+    {
     // Update parameter smoothing time
     const float smoothSec = apvts.getRawParameterValue("paramSmoothMs")->load() * 0.001f;
     smDrive.reset(sr, smoothSec);
     smSpace.reset(sr, smoothSec);
-    smDecay.reset(sr, smoothSec);
+    if (!physicalRing) smDecay.reset(sr, smoothSec);
+    else if (ringChanged || balanceWasActive || std::abs(ringSmoothRate - sr) > 0
+             || std::abs(ringSmoothTime - smoothSec) > 0)
+    {
+        const float current = ringChanged || ringSmoothRate <= 0
+            ? apvts.getRawParameterValue("decay")->load() : smDecay.getCurrentValue();
+        smDecay.reset(sr, smoothSec);
+        smDecay.setCurrentAndTargetValue(current);
+        ringSmoothRate = sr;
+        ringSmoothTime = smoothSec;
+    }
     smTone.reset(sr, smoothSec);
     smDensity.reset(sr, smoothSec);
     smMix.reset(sr, smoothSec);
     smInGain.reset(sr, smoothSec);
     smOutGain.reset(sr, smoothSec);
     smWidth.reset(sr, smoothSec);
+
+    }
+    const bool balanceChanged = balanced != balanceWasActive;
+    balanceWasActive = balanced;
+    balancedSniper.selectRate(sr);
+    const bool resetBalance = balanceResetRequested.exchange(false, std::memory_order_acquire) || balanceChanged;
+    smExcDrive.setTargetValue(apvts.getRawParameterValue("excDrive")->load());
 
     smDrive.setTargetValue(apvts.getRawParameterValue("drive")->load());
     smSpace.setTargetValue(apvts.getRawParameterValue("space")->load());
@@ -478,9 +738,75 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
     }
 
     const int topoOverride = juce::jlimit(0, 3, static_cast<int>(apvts.getRawParameterValue("resTopology")->load()));
+    const int activeTopo = topoOverride > 0 ? topoOverride - 1 : (gunMode == 1 ? 1 : (gunMode == 2 ? 2 : 0));
+    const auto ringRange = breach::ring::rangeFor(activeTopo, gunMode);
+    const double ringReference = std::sqrt(ringRange.shortest * ringRange.longest);
+    const bool sniperActive = balanced && activeTopo == 0 && gunMode == 3;
+    if (resetBalance || sniperActive != balancedSniperWasActive) balancedSniper.reset();
+    balancedSniperWasActive = sniperActive;
     const float attackMs = apvts.getRawParameterValue("resAttack")->load();
     const float fbDamping = apvts.getRawParameterValue("fbDamping")->load();
     const float stiffness = apvts.getRawParameterValue("stiffness")->load();
+    const bool useRings = getStringDspRevision() >= 2;
+    const bool stringActive = useRings && (topoOverride == 2 || (topoOverride == 0 && gunMode == 1));
+    stringBank.selectRate(sr);
+    const bool resetStringSelection = stringResetRequested.exchange(false, std::memory_order_acquire);
+    if (resetStringSelection || stringActive != stringWasActive)
+        stringBank.reset();
+    if (resetStringSelection)
+    {
+        // A stopped-transport engine change must not recall frozen legacy tails.
+        for (auto* voices : { &voicesL, &voicesR })
+            for (auto& voice : *voices)
+            {
+                std::fill(voice.combBuffer.begin(), voice.combBuffer.end(), 0.0f);
+                voice.combWritePos = 0; voice.combLpState = 0.0f; voice.allpassState = 0.0f;
+            }
+    }
+    stringWasActive = stringActive;
+    const bool useStkFormant = getFormantDspRevision() >= 2;
+    const bool formantActive = useStkFormant && (topoOverride == 3 || (topoOverride == 0 && gunMode == 2));
+    formantBank.selectRate(sr);
+    const bool resetFormant = formantResetRequested.exchange(false, std::memory_order_acquire);
+    if (resetFormant || formantActive != formantWasActive) formantBank.reset();
+    if (resetFormant && (topoOverride == 3 || (topoOverride == 0 && gunMode == 2)))
+    {
+        for (auto* voices : { &voicesL, &voicesR })
+            for (auto& voice : *voices)
+            {
+                voice.svf1Ic1 = voice.svf1Ic2 = 0.0f;
+                voice.svf2Ic1 = voice.svf2Ic2 = 0.0f;
+            }
+    }
+    formantWasActive = formantActive;
+    const bool useModal = getModalDspRevision() >= 2;
+    const bool modalTopology = (gunMode == 0 || gunMode == 4) && (topoOverride == 0 || topoOverride == 1);
+    const bool modalActive = useModal && modalTopology;
+    modalBank.selectRate(sr);
+    if (modalActive) modalBank.selectProfile(gunMode == 4);
+    const bool resetModal = modalResetRequested.exchange(false, std::memory_order_acquire);
+    if (resetModal || modalActive != modalWasActive) modalBank.reset();
+    if (resetModal && modalTopology)
+    {
+        for (auto* voices : { &voicesL, &voicesR })
+            for (auto& voice : *voices)
+            {
+                voice.svf1Ic1 = voice.svf1Ic2 = 0.0f;
+                voice.svf2Ic1 = voice.svf2Ic2 = 0.0f;
+            }
+    }
+    modalWasActive = modalActive;
+    if (balanced)
+    {
+        int profile = -1;
+        if (activeTopo == 1 && useRings) profile = 1;
+        else if (activeTopo == 2 && useStkFormant) profile = 2;
+        else if (activeTopo == 0 && gunMode == 3) profile = 3;
+        else if (activeTopo == 0 && modalActive) profile = gunMode == 4 ? 4 : 0;
+        const float trimTarget = breach::balance::trim(profile);
+        if (balanceChanged) smWetTrim.setCurrentAndTargetValue(trimTarget);
+        else smWetTrim.setTargetValue(trimTarget);
+    }
     const float excHpfHz = apvts.getRawParameterValue("excHpf")->load();
     const float excDrive = apvts.getRawParameterValue("excDrive")->load();
 
@@ -527,6 +853,22 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
     const bool motionOn = apvts.getRawParameterValue("motionEnable")->load() > 0.5f;
     const float arpRateHz = apvts.getRawParameterValue("arpRate")->load();
 
+    breach::reverb::Controls reverb;
+    reverb.enabled = apvts.getRawParameterValue("reverbEnable")->load() > .5f;
+    reverb.type = static_cast<int>(apvts.getRawParameterValue("reverbType")->load());
+    reverb.mix = apvts.getRawParameterValue("reverbMix")->load();
+    reverb.decay = apvts.getRawParameterValue("reverbDecay")->load();
+    reverb.predelayMs = apvts.getRawParameterValue("reverbPreDelay")->load();
+    reverb.damping = apvts.getRawParameterValue("reverbDamping")->load();
+    reverb.width = apvts.getRawParameterValue("reverbWidth")->load();
+    reverb.shimmer = apvts.getRawParameterValue("reverbShimmer")->load();
+    reverbEngine.setControls(reverb);
+
+    outputEq.setRates({currentSampleRate, sr});
+    std::array<breach::eq::BandSettings, breach::eq::bandCount> eqBands;
+    for (std::size_t band = 0; band < eqBands.size(); ++band) eqBands[band] = readOutputEqBand(band);
+    const bool runEq = outputEq.setTargets(outputEqEnabled->load(std::memory_order_relaxed) > .5f, eqBands);
+
     const int mixCurve = static_cast<int>(apvts.getRawParameterValue("mixCurve")->load());
     const bool limiterOn = apvts.getRawParameterValue("softLimiter")->load() > 0.5f;
 
@@ -539,6 +881,12 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
     std::array<float, kMaxVoices> voicePanR {};
     std::array<float, kMaxVoices> voiceDecayMul {};
 
+    const float tuneSpread = apvts.getRawParameterValue("voiceTuneSpread")->load();
+    const float panSpread = apvts.getRawParameterValue("voicePanSpread")->load() * .01f;
+    const bool macrosSet = tuneSpread > 0 || panSpread > 0;
+    const bool resetMacroGlide = std::abs(voiceMacroSampleRate - sr) > 0;
+    if (resetMacroGlide) voiceMacroSampleRate = sr;
+    bool runMacros = macrosSet;
     for (int v = 0; v < kMaxVoices; ++v)
     {
         voiceLevels[static_cast<size_t>(v)] = apvts.getRawParameterValue("vLevel_" + juce::String(v))->load();
@@ -547,7 +895,28 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
         voicePanL[static_cast<size_t>(v)] = std::cos(panAngle);
         voicePanR[static_cast<size_t>(v)] = std::sin(panAngle);
         voiceDecayMul[static_cast<size_t>(v)] = apvts.getRawParameterValue("vDecay_" + juce::String(v))->load();
+        const auto slot = static_cast<size_t>(v);
+        auto& glide = voiceMacroGlides[slot];
+        auto update = [&](auto& smoother, float target)
+        {
+            if (resetMacroGlide)
+            {
+                smoother.reset(sr, .018);
+                smoother.setCurrentAndTargetValue(target);
+            }
+            else if (!macrosSet && !macrosWereActive) smoother.setCurrentAndTargetValue(target);
+            else smoother.setTargetValue(target);
+            runMacros = runMacros || smoother.isSmoothing();
+        };
+        const float spreadPan = activeVoices > 1 ? juce::jlimit(-1.0f, 1.0f, pan + panSpread * breach::ring::panPattern[slot]) : pan;
+        const float spreadAngle = (spreadPan + 1.0f) * .25f * juce::MathConstants<float>::pi;
+        const float tune = std::exp2(tuneSpread * breach::ring::tunePattern[slot] / 1200.0f);
+        update(glide.pitchRatio, tune);
+        update(glide.left, std::cos(spreadAngle));
+        update(glide.right, std::sin(spreadAngle));
     }
+
+    macrosWereActive = runMacros;
 
     const float hpfCoeff = std::exp(-2.0f * juce::MathConstants<float>::pi * excHpfHz / static_cast<float>(sr));
     const float attackCoeff = 1.0f - std::exp(-1.0f / (juce::jmax(0.5f, attackMs) * 0.001f * static_cast<float>(sr)));
@@ -558,14 +927,14 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
     const float lfo1Hz = lfo1Sync ? static_cast<float>(hostBpm / 60.0) * juce::jlimit(0.125f, 8.0f, lfo1RateRaw * 0.25f) : lfo1RateRaw;
     const float lfo2Hz = lfo2Sync ? static_cast<float>(hostBpm / 60.0) * juce::jlimit(0.125f, 8.0f, lfo2RateRaw * 0.25f) : lfo2RateRaw;
 
-    float sumInSq = 0.0f;
-    float sumOutSq = 0.0f;
-
     for (int i = 0; i < numSamples; ++i)
     {
-        const float driveVal   = smDrive.getNextValue();
+        const float driveRaw   = smDrive.getNextValue();
+        const float driveVal   = balanced ? breach::balance::driveCurve(driveRaw) : driveRaw;
         const float spaceVal   = smSpace.getNextValue();
-        const float decayVal   = smDecay.getNextValue();
+        const float decayRaw   = smDecay.getNextValue();
+        const float decayVal   = balanced ? breach::balance::decayCurve(decayRaw) : decayRaw;
+        const double ringTarget = physicalRing ? breach::ring::targetSeconds(ringRange, decayRaw) : 0;
         const float toneVal    = smTone.getNextValue();
         const float densityVal = smDensity.getNextValue();
         const float mixVal     = smMix.getNextValue();
@@ -579,18 +948,7 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
         const float dryL = chL[i] * inGainLin;
         const float dryR = (numChannels > 1 ? chR[i] : chL[i]) * inGainLin;
         const float monoIn = 0.5f * (dryL + dryR);
-        sumInSq += monoIn * monoIn;
-
-        // Transient detector & envelope follower
         const float absIn = std::abs(monoIn);
-        envFast = 0.96f * envFast + 0.04f * absIn;
-        envSlow = 0.9985f * envSlow + 0.0015f * absIn;
-        const float delta = juce::jmax(0.0f, envFast - envSlow * 1.45f);
-        if (delta > 0.035f)
-            transientHold = juce::jmin(1.0f, transientHold + delta * 6.0f);
-        else
-            transientHold *= 0.9994f;
-
         if (absIn > modEnvState)
             modEnvState += modAttCoeff * (absIn - modEnvState);
         else
@@ -655,24 +1013,18 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
         excHpfStateL = hpL;
         excHpfStateR = hpR;
 
-        const float totalDrive = 1.0f + (driveVal * 4.5f + excDrive * 5.5f);
-        const float excL = std::tanh(hpL * totalDrive);
-        const float excR = std::tanh(hpR * totalDrive);
+        const float excitationDrive = balanced ? breach::balance::driveCurve(smExcDrive.getNextValue()) : excDrive;
+        const float totalDrive = 1.0f + (driveVal * 4.5f + excitationDrive * 5.5f);
+        const float excL = nonlinearProcessingEnabled ? nonlinearEngine->excite(hpL, totalDrive, 0) : std::tanh(hpL * totalDrive);
+        const float excR = nonlinearProcessingEnabled ? nonlinearEngine->excite(hpR, totalDrive, 1) : std::tanh(hpR * totalDrive);
 
-        // Determine active topology (0=SVF Bandpass, 1=Waveguide Comb, 2=Dual Formant)
-        int activeTopo = 0;
-        if (topoOverride > 0)
-            activeTopo = topoOverride - 1;
-        else if (gunMode == 1)
-            activeTopo = 1; // SHOTGUN -> Waveguide Comb
-        else if (gunMode == 2)
-            activeTopo = 2; // SMG -> Dual Formant
+        impactAnalysis.observeExcitation(excL, numChannels > 1 ? excR : excL);
 
         float resSumL = 0.0f;
         float resSumR = 0.0f;
 
-        const float effectiveDensity = juce::jlimit(0.05f, 1.0f, densityVal + modDepth * 0.35f);
-        const int voicesToRender = juce::jlimit(1, activeVoices,
+        const float effectiveDensity = juce::jlimit(balanced ? 0.0f : 0.05f, 1.0f, densityVal + modDepth * 0.35f);
+        const int voicesToRender = balanced ? activeVoices : juce::jlimit(1, activeVoices,
             static_cast<int>(std::ceil(effectiveDensity * static_cast<float>(activeVoices))));
 
         for (int v = 0; v < voicesToRender; ++v)
@@ -700,16 +1052,50 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
             // Pitch warp + stereo unison detuning
             const float unisonOffset = ((v % 2 == 0) ? -1.0f : 1.0f) * unisonAmt * 0.008f;
             const float warpFactor = 1.0f + modWarp * 0.06f + stiffness * 0.0025f * static_cast<float>(v * v);
-            const float fL = juce::jlimit(25.0f, static_cast<float>(sr * 0.42), targetFreqs[vs] * warpFactor * (1.0f + unisonOffset));
-            const float fR = juce::jlimit(25.0f, static_cast<float>(sr * 0.42), targetFreqs[vs] * warpFactor * (1.0f - unisonOffset));
+            auto& glide = voiceMacroGlides[vs];
+            const float tuned = runMacros ? targetFreqs[vs] * glide.pitchRatio.getNextValue() : targetFreqs[vs];
+            const float fL = juce::jlimit(25.0f, static_cast<float>(sr * 0.42), tuned * warpFactor * (1.0f + unisonOffset));
+            const float fR = juce::jlimit(25.0f, static_cast<float>(sr * 0.42), tuned * warpFactor * (1.0f - unisonOffset));
 
-            const float vDecay = juce::jlimit(0.05f, 0.9985f,
+            const double ringSeconds = physicalRing ? breach::ring::voiceSeconds(ringTarget, voiceDecayMul[vs]) : 0;
+            const float vDecay = physicalRing ? 0 : juce::jlimit(0.05f, 0.9985f,
                 0.82f + 0.176f * std::pow(juce::jlimit(0.05f, 1.0f, decayVal * voiceDecayMul[vs]), 0.35f));
 
             float outVoiceL = 0.0f;
             float outVoiceR = 0.0f;
 
-            if (activeTopo == 1)
+            if (sniperActive)
+            {
+                const float d = juce::jlimit(0.0f, 1.0f, decayVal * voiceDecayMul[vs]);
+                outVoiceL = balancedSniper.process(vs, 0, excL, fL, d, modQ, ringSeconds);
+                outVoiceR = balancedSniper.process(vs, 1, excR, fR, d, modQ, ringSeconds);
+                if (!nonlinearProcessingEnabled)
+                {
+                    outVoiceL = std::tanh(outVoiceL * 1.6f + .12f * outVoiceL * outVoiceL);
+                    outVoiceR = std::tanh(outVoiceR * 1.6f + .12f * outVoiceR * outVoiceR);
+                }
+            }
+            else if (activeTopo == 0 && modalActive)
+            {
+                const float modalDecay = juce::jlimit(0.0f, 1.0f, decayVal * voiceDecayMul[vs]);
+                const float brightness = juce::jlimit(0.0f, 1.0f, toneVal + modTilt * 0.35f);
+                outVoiceL = modalBank.process(vs, 0, excL, fL, modalDecay, stiffness, brightness, fbDamping, modQ, gunMode == 4, ringSeconds);
+                outVoiceR = modalBank.process(vs, 1, excR, fR, modalDecay, stiffness, brightness, fbDamping, modQ, gunMode == 4, ringSeconds);
+            }
+            else if (activeTopo == 2 && useStkFormant)
+            {
+                const float formantDecay = juce::jlimit(0.0f, 1.0f, decayVal * voiceDecayMul[vs]);
+                const float vowel = juce::jlimit(0.0f, 1.0f, toneVal + modTilt * 0.35f);
+                outVoiceL = formantBank.process(vs, 0, excL, fL, vowel, formantDecay, fbDamping, modQ, ringSeconds);
+                outVoiceR = formantBank.process(vs, 1, excR, fR, vowel, formantDecay, fbDamping, modQ, ringSeconds);
+            }
+            else if (activeTopo == 1 && useRings)
+            {
+                const float physicalDecay = juce::jlimit(0.0f, 1.0f, decayVal * voiceDecayMul[vs]);
+                outVoiceL = stringBank.process(vs, 0, excL, fL, physicalDecay, fbDamping, stiffness, ringSeconds);
+                outVoiceR = stringBank.process(vs, 1, excR, fR, physicalDecay, fbDamping, stiffness, ringSeconds);
+            }
+            else if (activeTopo == 1)
             {
                 // Waveguide Fractional-Delay Comb String with Lagrange Interpolation & Damping
                 const auto runComb = [&](VoiceDSP& vox, float inSample, float freq) -> float
@@ -751,7 +1137,9 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
                     const float apOut = -apCoeff * vox.combLpState + vox.allpassState;
                     vox.allpassState = vox.combLpState + apCoeff * apOut;
 
-                    const float fbGain = juce::jlimit(0.50f, 0.996f, vDecay);
+                    const float fbGain = physicalRing
+                        ? static_cast<float>(std::exp(-breach::ring::ln1000 / (ringSeconds * freq)))
+                        : juce::jlimit(0.50f, 0.996f, vDecay);
                     const float nextSample = std::tanh(inSample * 0.35f + apOut * fbGain);
 
                     vox.combBuffer[static_cast<size_t>(vox.combWritePos)] = nextSample;
@@ -774,7 +1162,10 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
                 const auto runSvf = [&](float inS, float freq, float& ic1, float& ic2) -> float
                 {
                     const float g = std::tan(juce::MathConstants<float>::pi * freq / static_cast<float>(sr));
-                    const float a1 = 1.0f / (1.0f + g * (g + k));
+                    // Bilinear damping for the requested physical ring time.
+                    const float damping = physicalRing ? static_cast<float>(
+                        breach::ring::ln1000 * (1.0 + g * g) / (sr * g * ringSeconds * (1.0 + modQ * .2))) : k;
+                    const float a1 = 1.0f / (1.0f + g * (g + damping));
                     const float a2 = g * a1;
                     const float a3 = g * a2;
 
@@ -783,7 +1174,7 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
                     const float v2 = ic2 + a2 * ic1 + a3 * v3;
                     ic1 = 2.0f * v1 - ic1;
                     ic2 = 2.0f * v2 - ic2;
-                    return v1 * std::sqrt(Q * 0.25f);
+                    return v1 * std::sqrt((physicalRing ? baseQ : Q) * 0.25f);
                 };
 
                 float bpL = runSvf(excL, fL, vL.svf1Ic1, vL.svf1Ic2);
@@ -796,7 +1187,7 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
                     bpL = 0.65f * bpL + 0.55f * runSvf(excL + bpL * 0.25f, f2L, vL.svf2Ic1, vL.svf2Ic2);
                     bpR = 0.65f * bpR + 0.55f * runSvf(excR + bpR * 0.25f, f2R, vR.svf2Ic1, vR.svf2Ic2);
                 }
-                else if (gunMode == 3) // SNIPER asymmetric harmonic saturation
+                else if (gunMode == 3 && !nonlinearProcessingEnabled) // Legacy SNIPER asymmetric harmonic saturation
                 {
                     bpL = std::tanh(bpL * 1.6f + 0.12f * bpL * bpL);
                     bpR = std::tanh(bpR * 1.6f + 0.12f * bpR * bpR);
@@ -806,23 +1197,53 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
                 outVoiceR = bpR;
             }
 
-            const float vGain = voiceLevels[vs] * vL.attackEnv;
+            if (nonlinearProcessingEnabled)
+            {
+                const bool sniper = activeTopo != 1 && activeTopo != 2 && gunMode == 3;
+                outVoiceL = nonlinearEngine->voice(outVoiceL, vs, 0, sniper);
+                outVoiceR = nonlinearEngine->voice(outVoiceR, vs, 1, sniper);
+            }
+
+            const float densityWeight = balanced ? breach::balance::voiceWeight(effectiveDensity, v, activeVoices) : 1.0f;
+            float vGain = voiceLevels[vs] * vL.attackEnv * densityWeight;
+            if (physicalRing) vGain *= breach::ring::strikeGain(ringSeconds, ringReference);
             outVoiceL *= vGain;
             outVoiceR *= vGain;
 
-            vL.energyMetric = 0.995f * vL.energyMetric + 0.005f * (std::abs(outVoiceL) + std::abs(outVoiceR));
-
             // Equal-power stereo panning per voice
-            resSumL += outVoiceL * voicePanL[vs];
-            resSumR += outVoiceR * voicePanR[vs];
+            const float panL = runMacros ? glide.left.getNextValue() : voicePanL[vs];
+            const float panR = runMacros ? glide.right.getNextValue() : voicePanR[vs];
+            resSumL += outVoiceL * panL;
+            resSumR += outVoiceR * panR;
+            const float pannedL = outVoiceL * panL;
+            const float pannedR = outVoiceR * panR;
+            impactAnalysis.observeVoice(vs, pannedL, numChannels > 1 ? pannedR : pannedL);
         }
 
-        const float normScale = 1.0f / std::sqrt(static_cast<float>(voicesToRender));
+        if (!balanced && voicesToRender < activeVoices)
+            for (int voice = voicesToRender; voice < activeVoices; ++voice)
+                impactAnalysis.observeVoice(static_cast<std::size_t>(voice), 0, 0);
+
+        if (runMacros && !balanced)
+            for (int voice = voicesToRender; voice < activeVoices; ++voice)
+            {
+                auto& glide = voiceMacroGlides[static_cast<size_t>(voice)];
+                glide.pitchRatio.skip(1);
+                glide.left.skip(1);
+                glide.right.skip(1);
+            }
+
+        const float normScale = balanced ? breach::balance::densityNormalization(effectiveDensity, activeVoices) : 1.0f / std::sqrt(static_cast<float>(voicesToRender));
         float wetL = resSumL * normScale;
         float wetR = resSumR * normScale;
 
-        // Schroeder Allpass Space Diffuser (boosted in REVOLVER / Space)
-        const float spaceAmount = juce::jlimit(0.0f, 1.0f, spaceVal + (gunMode == 4 ? 0.35f : 0.0f) + modDrift * 0.25f);
+        impactAnalysis.observeResonance(wetL, numChannels > 1 ? wetR : wetL);
+        const breach::spatial::Stereo spatialInput { wetL, wetR };
+
+        // Legacy Schroeder Allpass Space Diffuser (boosted in REVOLVER / Space)
+        const float smearCurve = spaceVal * spaceVal * (3.0f - 2.0f * spaceVal);
+        const float spaceAmount = juce::jlimit(0.0f, 1.0f,
+            (shortSmear ? smearCurve : spaceVal + (gunMode == 4 ? .35f : 0.0f)) + modDrift * .25f);
         if (spaceAmount > 0.005f)
         {
             const float diffL = diffuserL[1].process(diffuserL[0].process(wetL));
@@ -837,6 +1258,21 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
         {
             wetL = hilbertL.process(wetL, totalShiftHz, sr);
             wetR = hilbertR.process(wetR, totalShiftHz, sr);
+        }
+
+        // Both spatial paths stay warm. Crossfade only when the non-parameter
+        // engine revision changes; the legacy endpoint preserves its exact math.
+        const auto upgraded = spatialEngine.process(spatialInput, spaceAmount, totalShiftHz, shortSmear);
+        spatialRevisionBlend += juce::jlimit(-spatialBlendStep, spatialBlendStep, spatialTarget - spatialRevisionBlend);
+        if (spatialRevisionBlend >= 1.0f)
+        {
+            wetL = upgraded.left;
+            wetR = upgraded.right;
+        }
+        else if (spatialRevisionBlend > 0.0f)
+        {
+            wetL += spatialRevisionBlend * (upgraded.left - wetL);
+            wetR += spatialRevisionBlend * (upgraded.right - wetR);
         }
 
         // Tilt EQ driven by Tone macro + Mod Tilt
@@ -857,6 +1293,11 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
         wetL = mid + side;
         wetR = mid - side;
 
+        if (balanced)
+        {
+            const float gain = smWetTrim.getNextValue(); wetL *= gain; wetR *= gain;
+        }
+
         // Dry / Wet Mix Curve
         float dryGain = 1.0f - mixVal;
         float wetGain = mixVal;
@@ -873,8 +1314,24 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
             wetGain = s;
         }
 
-        float outL = (dryL * dryGain + wetL * wetGain) * outGainLin;
-        float outR = (dryR * dryGain + wetR * wetGain) * outGainLin;
+        const float alignedDryL = nonlinearProcessingEnabled ? nonlinearEngine->dry(dryL, 0) : dryL;
+        const float alignedDryR = nonlinearProcessingEnabled ? nonlinearEngine->dry(dryR, 1) : dryR;
+        float mixedL = alignedDryL * dryGain + wetL * wetGain;
+        float mixedR = alignedDryR * dryGain + wetR * wetGain;
+        if (runEq)
+        {
+            const auto equalized = outputEq.process({mixedL, mixedR});
+            mixedL = static_cast<float>(equalized.left);
+            mixedR = static_cast<float>(equalized.right);
+        }
+        if (!reverbEngine.idle())
+        {
+            const auto reverberated = reverbEngine.process({mixedL, mixedR});
+            mixedL = reverberated.left;
+            mixedR = reverberated.right;
+        }
+        float outL = mixedL * outGainLin;
+        float outR = mixedR * outGainLin;
 
         if (limiterOn)
         {
@@ -882,31 +1339,145 @@ void BreachResonatorAudioProcessor::processCoreBlock(juce::dsp::AudioBlock<float
             outR = std::tanh(outR);
         }
 
+        if (nonlinearProcessingEnabled)
+        {
+            outL = nonlinearEngine->output(outL, 0);
+            outR = nonlinearEngine->output(outR, 1);
+        }
         chL[i] = outL;
         if (numChannels > 1)
             chR[i] = outR;
-
-        const float monoOut = 0.5f * (outL + outR);
-        sumOutSq += monoOut * monoOut;
     }
 
-    // Publish lock-free UI telemetry
-    const float invN = 1.0f / static_cast<float>(numSamples);
-    telemetry.inputRms.store(std::sqrt(sumInSq * invN), std::memory_order_relaxed);
-    telemetry.outputRms.store(std::sqrt(sumOutSq * invN), std::memory_order_relaxed);
-    telemetry.transientImpulse.store(transientHold, std::memory_order_relaxed);
-    telemetry.activeArpVoice.store(arpStep, std::memory_order_relaxed);
-    telemetry.lfo1Value.store(evaluateLfo(lfo1Shape, lfo1Phase + lfo1PhaseOff), std::memory_order_relaxed);
-    telemetry.lfo2Value.store(evaluateLfo(lfo2Shape, lfo2Phase + lfo2PhaseOff), std::memory_order_relaxed);
-    telemetry.envValue.store(juce::jlimit(0.0f, 1.0f, modEnvState * 4.0f), std::memory_order_relaxed);
+    // Keep inaudible slots in sync when the voice count or legacy density changes.
+    if (runMacros)
+    {
+        for (int voice = activeVoices; voice < kMaxVoices; ++voice)
+        {
+            auto& glide = voiceMacroGlides[static_cast<size_t>(voice)];
+            glide.pitchRatio.skip(numSamples);
+            glide.left.skip(numSamples);
+            glide.right.skip(numSamples);
+        }
+    }
 
-    for (int v = 0; v < kMaxVoices; ++v)
-        telemetry.voiceEnergies[static_cast<size_t>(v)].store(voicesL[static_cast<size_t>(v)].energyMetric, std::memory_order_relaxed);
+    impactAnalysis.decaySilentVoices(static_cast<std::size_t>(activeVoices), numSamples);
+    impactAnalysis.publishCore(telemetry.impact);
+}
+
+void BreachResonatorAudioProcessor::configureNonlinearProcessing(int osChoice, bool enabled)
+{
+    const int choice = osChoice + (enabled ? 3 : 0);
+    if (choice == nonlinearProcessingChoice) return;
+    nonlinearProcessingChoice = choice;
+    nonlinearProcessingEnabled = enabled;
+    nonlinearEngine->prepare(currentSampleRate * static_cast<double>(1 << osChoice), 1 << osChoice);
+    if (enabled)
+    {
+        nonlinearOversampler2x->reset();
+        nonlinearOversampler4x->reset();
+    }
+    else
+    {
+        oversampler2x->reset(); oversampler4x->reset();
+    }
+    refreshNonlinearLatency();
+}
+
+void BreachResonatorAudioProcessor::refreshNonlinearLatency()
+{
+    const auto osChoice = static_cast<size_t>(juce::jlimit(0, 2, static_cast<int>(apvts.getRawParameterValue("oversampling")->load())));
+    // Modern oversamplers compensate fractional latency internally. The two
+    // extra base samples align both ADAA stages for every mode and OS choice.
+    const int latency = getNonlinearDspRevision() >= 2 ? nonlinearLatencies[osChoice].load() : 0;
+    if (getLatencySamples() != latency) setLatencySamples(latency);
+}
+
+void BreachResonatorAudioProcessor::setNonlinearDspRevision(int revision)
+{
+    nonlinearDspRevision.store(revision >= 2 ? 2 : 1, std::memory_order_release);
+    refreshNonlinearLatency();
+    updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+}
+
+void BreachResonatorAudioProcessor::setSmearDspRevision(int revision)
+{
+    smearDspRevision.store(revision >= 2 ? 2 : 1, std::memory_order_release);
+    updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+}
+
+double BreachResonatorAudioProcessor::getTailLengthSeconds() const
+{
+    if (apvts.getRawParameterValue("reverbEnable")->load() > .5f) return 20;
+    return usesRingTime() ? breach::ring::maxSeconds : 4;
+}
+
+void BreachResonatorAudioProcessor::setRingTimeEnabled(bool enabled)
+{
+    ringTimeEnabled.store(enabled, std::memory_order_relaxed);
+    updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+}
+
+double BreachResonatorAudioProcessor::nominalRingSeconds(float decay) const noexcept
+{
+    const int gun = static_cast<int>(apvts.getRawParameterValue("gunMode")->load());
+    const int override = static_cast<int>(apvts.getRawParameterValue("resTopology")->load());
+    const int topology = override > 0 ? override - 1 : (gun == 1 ? 1 : (gun == 2 ? 2 : 0));
+    return breach::ring::targetSeconds(breach::ring::rangeFor(topology, gun), decay);
+}
+
+void BreachResonatorAudioProcessor::setBalanceRevision(int revision)
+{
+    balanceRevision.store(revision >= 2 ? 2 : 1, std::memory_order_release);
+    balanceResetRequested.store(true, std::memory_order_release);
+    updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+}
+
+void BreachResonatorAudioProcessor::setModalDspRevision(int revision)
+{
+    modalDspRevision.store(revision >= 2 ? 2 : 1, std::memory_order_release);
+    modalResetRequested.store(true, std::memory_order_release);
+    updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+}
+
+void BreachResonatorAudioProcessor::setFormantDspRevision(int revision)
+{
+    formantDspRevision.store(revision >= 2 ? 2 : 1, std::memory_order_release);
+    formantResetRequested.store(true, std::memory_order_release);
+    updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+}
+
+void BreachResonatorAudioProcessor::setStringDspRevision(int revision)
+{
+    stringDspRevision.store(revision >= 2 ? 2 : 1, std::memory_order_release);
+    stringResetRequested.store(true, std::memory_order_release);
+    updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+}
+
+void BreachResonatorAudioProcessor::setSpatialDspRevision(int revision)
+{
+    spatialDspRevision.store(revision >= 2 ? 2 : 1, std::memory_order_release);
+    updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+}
+
+void BreachResonatorAudioProcessor::setFaustOttEnabled(bool enabled)
+{
+    faustOttEnabled.store(enabled, std::memory_order_relaxed);
+    updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
 }
 
 void BreachResonatorAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
+    state.setProperty("ottDspRevision", usesFaustOtt() ? 2 : 1, nullptr);
+    state.setProperty("smearDspRevision", getSmearDspRevision(), nullptr);
+    state.setProperty("ringTimeRevision", usesRingTime() ? 2 : 1, nullptr);
+    state.setProperty("balanceRevision", getBalanceRevision(), nullptr);
+    state.setProperty("modalDspRevision", getModalDspRevision(), nullptr);
+    state.setProperty("formantDspRevision", getFormantDspRevision(), nullptr);
+    state.setProperty("stringDspRevision", getStringDspRevision(), nullptr);
+    state.setProperty("nonlinearDspRevision", getNonlinearDspRevision(), nullptr);
+    state.setProperty("spatialDspRevision", getSpatialDspRevision(), nullptr);
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     copyXmlToBinary(*xml, destData);
 }
@@ -915,7 +1486,51 @@ void BreachResonatorAudioProcessor::setStateInformation(const void* data, int si
 {
     std::unique_ptr<juce::XmlElement> xmlState(getXmlFromBinary(data, sizeInBytes));
     if (xmlState != nullptr && xmlState->hasTagName(apvts.state.getType()))
-        apvts.replaceState(juce::ValueTree::fromXml(*xmlState));
+    {
+        auto state = juce::ValueTree::fromXml(*xmlState);
+        // Unversioned v1.1.2 sessions retain their original sound.
+        const int revision = static_cast<int>(state.getProperty("spatialDspRevision", 1));
+        const int nonlinearRevision = static_cast<int>(state.getProperty("nonlinearDspRevision", 1));
+        const int stringRevision = static_cast<int>(state.getProperty("stringDspRevision", 1));
+        const int formantRevision = static_cast<int>(state.getProperty("formantDspRevision", 1));
+        const int modalRevision = static_cast<int>(state.getProperty("modalDspRevision", 1));
+        const int balance = static_cast<int>(state.getProperty("balanceRevision", 1));
+        // Missing module parameters must restore their defaults even when an
+        // older session replaces a state that had those modules active.
+        auto restoreDefaultIfMissing = [&](const juce::String& id)
+        {
+            if (state.getChildWithProperty("id", id).isValid()) return;
+            auto* parameter = apvts.getParameter(id);
+            juce::ValueTree child("PARAM");
+            child.setProperty("id", id, nullptr);
+            child.setProperty("value", parameter->convertFrom0to1(parameter->getDefaultValue()), nullptr);
+            state.appendChild(child, nullptr);
+        };
+        for (const auto* id : {"ottEnable", "ottDepth", "ottTime", "ottUp", "ottDown", "ottInGain", "ottOutGain", "ottLowSplit", "ottHighSplit",
+                               "reverbEnable", "reverbType", "reverbMix", "reverbDecay", "reverbPreDelay", "reverbDamping", "reverbWidth", "reverbShimmer",
+                               "outputEqEnable", "voiceTuneSpread", "voicePanSpread"})
+            restoreDefaultIfMissing(id);
+        for (std::size_t band = 0; band < breach::eq::bandCount; ++band)
+            for (const auto* suffix : {"Enable", "Type", "Freq", "Gain", "Q"})
+                restoreDefaultIfMissing(outputEqBandId(band, suffix));
+        const int smear = static_cast<int>(state.getProperty("smearDspRevision", 1));
+        smearDspRevision.store(smear >= 2 ? 2 : 1, std::memory_order_release);
+        apvts.replaceState(state);
+        faustOttEnabled.store(static_cast<int>(state.getProperty("ottDspRevision", 1)) >= 2, std::memory_order_relaxed);
+        ringTimeEnabled.store(static_cast<int>(state.getProperty("ringTimeRevision", 1)) >= 2, std::memory_order_relaxed);
+        ancillaryResetRequested.store(true, std::memory_order_release);
+        balanceRevision.store(balance >= 2 ? 2 : 1, std::memory_order_release);
+        balanceResetRequested.store(true, std::memory_order_release);
+        modalDspRevision.store(modalRevision >= 2 ? 2 : 1, std::memory_order_release);
+        modalResetRequested.store(true, std::memory_order_release);
+        formantDspRevision.store(formantRevision >= 2 ? 2 : 1, std::memory_order_release);
+        formantResetRequested.store(true, std::memory_order_release);
+        stringDspRevision.store(stringRevision >= 2 ? 2 : 1, std::memory_order_release);
+        stringResetRequested.store(true, std::memory_order_release);
+        nonlinearDspRevision.store(nonlinearRevision >= 2 ? 2 : 1, std::memory_order_release);
+        spatialDspRevision.store(revision >= 2 ? 2 : 1, std::memory_order_release);
+        refreshNonlinearLatency();
+    }
 }
 
 juce::AudioProcessorEditor* BreachResonatorAudioProcessor::createEditor()
